@@ -1,0 +1,37 @@
+"""agentflow —— 最小 DAG 编排内核（自研，零三方依赖）。
+
+落地调研报告的核心结论：
+- StateGraph：节点=函数 / 边 / 条件边（支持循环），super-step 并行执行；
+- Checkpointer：事件溯源式持久化，恢复时不重跑已完成节点；
+- interrupt / Command：人在回路暂停与恢复。
+"""
+from .graph import (
+    CompiledGraph,
+    NodeContext,
+    RunResult,
+    StateGraph,
+    START,
+    END,
+)
+from .state import StateSchema, append_reducer, overwrite_reducer
+from .checkpoint import Checkpoint, Checkpointer
+from .interrupt import Command, Interrupt
+from .llm import LLMRegistry, NodeLLMConfig
+
+__all__ = [
+    "StateGraph",
+    "CompiledGraph",
+    "NodeContext",
+    "RunResult",
+    "START",
+    "END",
+    "StateSchema",
+    "append_reducer",
+    "overwrite_reducer",
+    "Checkpoint",
+    "Checkpointer",
+    "Command",
+    "Interrupt",
+    "LLMRegistry",
+    "NodeLLMConfig",
+]
