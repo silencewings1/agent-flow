@@ -153,7 +153,7 @@
 对应文件：
 
 - `agentflow/llm.py`
-- `llm_config.example.json`
+- `conf/llm_config.example.json`
 
 评价：
 

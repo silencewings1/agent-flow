@@ -1,6 +1,6 @@
 # agentflow —— 最小 DAG 编排内核
 
-一个零三方依赖、纯标准库的 Python 实现，把[调研报告](AI-Agent编排Workflow调研报告.md)的核心结论落成可运行代码：
+一个零三方依赖、纯标准库的 Python 实现，把[调研报告](docs/agent-flow-research-report.md)的核心结论落成可运行代码：
 
 > **「AgentMesh 式角色划分（Planner/Coder/Debugger/Reviewer） × LangGraph 式 DAG 编排 + checkpointer」** —— 报告指出这是目前少有成熟产品占据的结合点。
 
@@ -25,16 +25,23 @@ agentflow/
   interrupt.py   # Interrupt 异常 + Command + interrupt() 原语
   checkpoint.py  # 事件溯源式 SQLite checkpointer
   graph.py       # StateGraph 定义 + CompiledGraph 超步执行器
-  nodes.py       # AgentMesh 四节点（mock）+ 条件路由函数
-demo.py            # 4 个可运行场景
-test_invariants.py # 核心不变量测试（不重跑 / 回环终止）
+  llm.py         # 每节点 LLM 配置层（mock / Anthropic / OpenAI）
+  nodes.py       # AgentMesh 四节点（LLM 可配置）+ 条件路由函数
+conf/
+  llm_config.example.json # 每节点 LLM 配置示例
+docs/
+  agent-flow-research-report.md  # 调研报告
+  agent-flow-analysis-report.md  # 功能分析报告
+test/
+  test_invariants.py # 核心不变量测试（不重跑 / 回环终止）
+demo.py              # 5 个可运行场景
 ```
 
 ## 快速开始
 
 ```bash
-python3 demo.py            # 跑 4 个演示场景
-python3 test_invariants.py # 跑核心不变量测试
+python3 demo.py                 # 跑 5 个演示场景
+PYTHONPATH=. python3 test/test_invariants.py  # 跑核心不变量测试
 ```
 
 无需安装任何依赖（Python 3.8+ 标准库即可）。
@@ -83,7 +90,7 @@ r = app.invoke({}, thread_id="job-1", command=Command(resume={"approve": True}))
 
 ### 1) 写配置文件
 
-复制 [llm_config.example.json](llm_config.example.json) 为 `llm_config.json`：
+复制 [conf/llm_config.example.json](conf/llm_config.example.json) 为项目根目录下的 `llm_config.json`：
 
 ```json
 {
@@ -119,11 +126,11 @@ reg = LLMRegistry.load("llm_config.json")  # 文件不存在则全 mock
 N.set_registry(reg)                        # 流水线节点据此调用对应 provider
 ```
 
-节点内通过 `ctx`/registry 拿到 `reg.complete("coder", prompt)`，由配置决定打到 Claude 还是 OpenAI。**图结构、checkpointer、HITL 全部不变。** 见 demo 场景 5（按节点解析 provider/model）。
+节点内通过 `ctx`/registry 拿到 `reg.complete("coder", prompt)`，由配置决定打到 Claude 还是 OpenAI。**图结构、checkpointer、HITL 全部不变。** 见 `demo.py` 场景 5（按节点解析 provider/model）。
 
 ## 已验证能力
 
-`test_invariants.py` 断言：
+`test/test_invariants.py` 断言：
 - **不重跑**：中断恢复后，中断点之前的节点调用次数不增加（`a=1, b=1` 保持不变）；
 - **回环终止**：纯回环图被 `max_steps` 兜底为 `failed`，不会无限跑。
 
@@ -132,4 +139,4 @@ N.set_registry(reg)                        # 流水线节点据此调用对应 p
 - **并发模型**：用线程池（适合 I/O 密集的 LLM 调用）；CPU 密集需换进程池。
 - **确定性**：同一 super-step 内的 update 按 batch 顺序合并，保证可复现。
 - **持久化后端**：当前为 SQLite；接口很薄，可替换为 Redis/Postgres。
-- **未实现（留作扩展）**：分布式 worker、子图嵌套、MCP 工具接入、A2A 跨 Agent 委派（见报告附录 A 与第五章）。
+- **未实现（留作扩展）**：分布式 worker、子图嵌套、MCP 工具接入、A2A 跨 Agent 委派（见 `docs/agent-flow-research-report.md` 附录 A 与第五章）。
