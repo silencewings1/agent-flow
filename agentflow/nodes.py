@@ -1,4 +1,4 @@
-"""AgentMesh 式四节点：Planner / Coder / Debugger / Reviewer。
+"""AgentMesh 式节点：Planner / Coder / Debugger / AI Review / Human Review。
 
 对应报告第四章「形态 A：流水线式（AgentMesh）」。
 
@@ -99,37 +99,46 @@ def debugger(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     }
 
 
-def reviewer(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
-    """最终评审：人在回路。先让 LLM 给评审意见，再请求人工决定。"""
+def ai_review(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
+    """AI 评审：纯 LLM 评审，输出技术意见。不中断。"""
     try:
-        opinion = ctx.activity("llm_complete", lambda: get_registry().complete(
+        comments = ctx.activity("ai_review_llm", lambda: get_registry().complete(
             "reviewer",
-            f"评审 v{state['code_version']} 代码，给出合并建议。",
-            system="你是技术评审专家，输出 review 意见。",
+            f"评审 v{state['code_version']} 代码（tasks: {state['tasks']}），"
+            f"重点关注：代码质量、边界处理、测试覆盖。",
+            system="你是技术评审专家，给出结构化 review 意见。",
         ))
     except Exception:
-        opinion = "[LLM 不可用，跳过 AI 评审意见]"
+        comments = "[LLM 不可用，跳过 AI 评审意见]"
+    return {
+        "ai_review": comments,
+        "log": [f"[AI Reviewer] 完成 v{state['code_version']} 评审"],
+    }
+
+
+def human_review(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
+    """人在回路：基于 AI 评审意见决定合并/打回。中断等待人工输入。"""
     decision = ctx.interrupt({
         "ask": "请评审并决定是否合并",
         "code_version": state["code_version"],
         "tasks": state["tasks"],
-        "ai_opinion": opinion,
+        "ai_review": state.get("ai_review", ""),
     })
     approved = bool(decision.get("approve")) if isinstance(decision, dict) else bool(decision)
     return {
         "approved": approved,
-        "review_note": decision if isinstance(decision, dict) else {"approve": approved},
-        "log": [f"[Reviewer] 人工决定: {'合并' if approved else '打回'}"],
+        "human_review_decision": decision if isinstance(decision, dict) else {"approve": approved},
+        "log": [f"[Human Reviewer] 人工决定: {'合并' if approved else '打回'}"],
     }
 
 
 # —— 条件边路由函数 —— #
 
 def route_after_debug(state: Dict[str, Any]) -> str:
-    """测试通过 → 进入评审；否则 → 退回 Coder（形成回环）。"""
-    return "reviewer" if state.get("tests_passed") else "coder"
+    """测试通过 → 进入 AI 评审；否则 → 退回 Coder（形成回环）。"""
+    return "ai_review" if state.get("tests_passed") else "coder"
 
 
-def route_after_review(state: Dict[str, Any]) -> str:
+def route_after_human_review(state: Dict[str, Any]) -> str:
     from .graph import END
     return END if state.get("approved") else "coder"
