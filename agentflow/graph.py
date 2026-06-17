@@ -10,12 +10,13 @@ START / END 是两个保留节点名，分别表示入口与出口。
 """
 from __future__ import annotations
 
+import ast
 import time
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from .checkpoint import Checkpoint, Checkpointer
 from .interrupt import Command, Interrupt, _MISSING
@@ -28,6 +29,17 @@ END = "__end__"
 NodeFn = Callable[[Dict[str, Any], "NodeContext"], Optional[Dict[str, Any]]]
 # 条件边路由函数：接收 state → 返回下一个（或多个）节点名。
 RouterFn = Callable[[Dict[str, Any]], Any]
+
+
+def _get_source(fn: Any) -> str:
+    """取 callable 的源码字符串。优先用 inspect.getsource（保留缩进与原貌），
+    失败时退到去缩进的 repr。"""
+    import inspect
+    try:
+        return inspect.getsource(fn)
+    except (OSError, TypeError):
+        import textwrap
+        return textwrap.dedent(repr(fn))
 
 
 @dataclass
@@ -60,6 +72,23 @@ class RunResult:
     step: int
     interrupt_payload: Any = None
     error: Optional[str] = None
+
+
+@dataclass
+class ValidationIssue:
+    """validate() 的一项发现。level 决定严重程度：
+    - error：必须修复，编译时可直接 raise
+    - warning：可疑但合法，需要人工确认
+    - info：仅提示（如检测到循环）
+    """
+    level: str                 # "error" | "warning" | "info"
+    message: str
+    node: Optional[str] = None
+
+    def __str__(self) -> str:
+        prefix = {"error": "❌", "warning": "⚠️ ", "info": "ℹ️ "}.get(self.level, "")
+        where = f" [{self.node}]" if self.node else ""
+        return f"{prefix} {self.level.upper()}{where}: {self.message}"
 
 
 class StateGraph:
@@ -106,6 +135,219 @@ class StateGraph:
         if not self._entry:
             raise ValueError("缺少入口：请 add_edge(START, <node>)")
         return CompiledGraph(self, checkpointer or Checkpointer())
+
+    # —— 拓扑静态分析：编译前发现非法结构 —— #
+    def validate(self) -> List[ValidationIssue]:
+        """对图定义做静态校验，编译前调用。
+
+        返回所有发现的问题（error / warning / info），调用方可按需 raise。
+        设计原则：能静态判定的尽量静态判定；条件边返回值无法静态推断时，
+        给出 warning 让人工确认而不是直接报错。
+        """
+        issues: List[ValidationIssue] = []
+
+        # 1) 入口必须存在
+        if not self._entry:
+            issues.append(ValidationIssue("error", "缺少入口：未连接 START"))
+
+        # 2) 条件边函数必须可调用
+        for src, router in self._cond.items():
+            if not callable(router):
+                issues.append(ValidationIssue(
+                    "error", f"条件边函数不可调用: {router!r}", node=src))
+
+        # 3) 静态边不能引用未定义节点
+        for src, outs in self._edges.items():
+            for dst in outs:
+                if dst != END and dst not in self._nodes:
+                    issues.append(ValidationIssue(
+                        "error", f"边引用了未定义节点: {src} -> {dst}", node=src))
+
+        # 4) BFS 可达性：所有节点必须能从入口走到
+        # 条件边目标未知：尽量用 AST 提取的字符串字面量作为可能目标集，
+        # 静态分析拿不到时（lambda/partial 等）才退到「所有节点」这种最保守情况
+        reachable: Set[str] = set()
+        queue: List[str] = list(self._entry)
+        while queue:
+            n = queue.pop(0)
+            if n in reachable or n == END or n not in self._nodes:
+                continue
+            reachable.add(n)
+            for out in self._edges.get(n, []):
+                if out not in reachable and out != END and out in self._nodes:
+                    queue.append(out)
+            if n in self._cond:
+                targets = self._static_string_returns(self._cond[n])
+                if not targets:
+                    targets = set(self._nodes.keys())
+                for m in targets:
+                    if m not in reachable and m != END and m in self._nodes:
+                        queue.append(m)
+        for n in self._nodes:
+            if n not in reachable:
+                issues.append(ValidationIssue(
+                    "error", f"节点不可达（从 START 出发走不到）", node=n))
+
+        # 5) 是否有路径到 END：反向 BFS
+        reaches_end: Set[str] = set()
+        queue = []
+        for n in self._nodes:
+            outs = self._edges.get(n, [])
+            # 静态边连到 END、没有任何出边、或者有条件边，都算「可能到 END」
+            if END in outs or not outs or n in self._cond:
+                queue.append(n)
+                reaches_end.add(n)
+        # 反向传播：任何节点能走到 reaches_end 中的节点，自己也算
+        incoming: Dict[str, List[str]] = {n: [] for n in self._nodes}
+        for src, outs in self._edges.items():
+            for o in outs:
+                if o in incoming:
+                    incoming[o].append(src)
+        while queue:
+            n = queue.pop(0)
+            for src in incoming[n]:
+                if src not in reaches_end:
+                    reaches_end.add(src)
+                    queue.append(src)
+        for n in self._nodes:
+            if n not in reaches_end:
+                issues.append(ValidationIssue(
+                    "warning", f"节点没有路径到 END（疑似死胡同）", node=n))
+
+        # 6) 重复边
+        for src, outs in self._edges.items():
+            counts: Dict[str, int] = {}
+            for o in outs:
+                counts[o] = counts.get(o, 0) + 1
+            for o, c in counts.items():
+                if c > 1:
+                    issues.append(ValidationIssue(
+                        "warning", f"重复边 {src} -> {o}（出现 {c} 次）", node=src))
+
+        # 7) 条件边返回值静态分析：从源码 AST 中提取字符串字面量
+        for src, router in self._cond.items():
+            bad = self._static_string_returns(router)
+            for lit in bad:
+                if lit == END:
+                    continue
+                if lit not in self._nodes:
+                    issues.append(ValidationIssue(
+                        "warning", f"条件边可能返回未定义节点 {lit!r}", node=src))
+
+        # 8) 循环检测：仅看静态边，不阻止编译（循环是合法功能）
+        if self._has_cycle():
+            issues.append(ValidationIssue(
+                "info", "检测到静态边循环（合法，已被 max_steps 限制）"))
+
+        return issues
+
+    def _static_string_returns(self, fn: RouterFn) -> Set[str]:
+        """从路由函数源码中提取所有字符串字面量 return 值（启发式）。
+
+        处理直接 return、if/else 三元、and/or 短路、列表/元组等组合形式；
+        仅看 AST 字面量，不模拟实际控制流，所以会有少量误报（warning 级别
+        本来就允许噪声）。
+        """
+        literals: Set[str] = set()
+        try:
+            src = _get_source(fn)
+        except (OSError, TypeError):
+            return literals
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            return literals
+
+        def walk(expr: ast.AST) -> None:
+            if expr is None:
+                return
+            if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+                literals.add(expr.value)
+                return
+            if isinstance(expr, (ast.IfExp, ast.BoolOp)):
+                # 三元 / and-or：所有分支都可能是返回值
+                if isinstance(expr, ast.IfExp):
+                    walk(expr.body)
+                    walk(expr.orelse)
+                else:
+                    for v in expr.values:
+                        walk(v)
+                return
+            if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+                for elt in expr.elts:
+                    walk(elt)
+                return
+            if isinstance(expr, ast.Dict):
+                for v in expr.values:
+                    walk(v)
+                return
+            if isinstance(expr, ast.Call):
+                # 函数调用的返回值无法静态分析，保守忽略
+                return
+            # 其它节点（Name、Attribute 等）— 不递归到子节点，宁缺勿滥
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Return) and node.value is not None:
+                walk(node.value)
+        return literals
+
+    def _has_cycle(self) -> bool:
+        """DFS 检测静态边中的环。条件边不参与（无法静态判定）。"""
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color = {n: WHITE for n in self._nodes}
+
+        def dfs(n: str) -> bool:
+            color[n] = GRAY
+            for out in self._edges.get(n, []):
+                if out == END or out not in self._nodes:
+                    continue
+                if color[out] == GRAY:
+                    return True
+                if color[out] == WHITE and dfs(out):
+                    return True
+            color[n] = BLACK
+            return False
+
+        return any(color[n] == WHITE and dfs(n) for n in self._nodes)
+
+    def to_mermaid(self) -> str:
+        """把图导出为 Mermaid 语法。条件边用虚线 + router 函数名标注。
+
+        节点名做基础转义（替换 Mermaid 保留字符），label 用双引号包裹。
+        """
+        lines = ["graph TD"]
+
+        def safe(name: str) -> str:
+            # Mermaid 节点 ID 不能含空格或保留符号
+            return name.replace(" ", "_").replace("-", "_").replace(".", "_")
+
+        # 节点定义（含 START/END）
+        lines.append(f"    {safe(START)}([\"{START}\"]):::startNode")
+        for n in sorted(self._nodes.keys()):
+            label = n
+            lines.append(f"    {safe(n)}[\"{label}\"]")
+        lines.append(f"    {safe(END)}([\"{END}\"]):::endNode")
+
+        # 静态边
+        for src, outs in self._edges.items():
+            for dst in outs:
+                lines.append(f"    {safe(src)} --> {safe(dst)}")
+
+        # 入口边（add_edge(START, ...) 不在 self._edges 里）
+        for dst in self._entry:
+            lines.append(f"    {safe(START)} --> {safe(dst)}")
+
+        # 条件边：虚线 + 函数名标注，可能目标集作为标签提示
+        for src, fn in self._cond.items():
+            fn_name = getattr(fn, "__name__", "cond")
+            hints = sorted(self._static_string_returns(fn) - {END})
+            if hints:
+                label = f"{fn_name} → {{{','.join(hints)}}}"
+            else:
+                label = fn_name
+            lines.append(f"    {safe(src)} -.->|{label}| ????")
+
+        return "\n".join(lines) + "\n"
 
     # —— 内部：给定刚跑完的节点，算出它的下游 —— #
     def _successors(self, node: str, state: Dict[str, Any]) -> List[str]:
