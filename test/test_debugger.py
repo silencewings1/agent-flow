@@ -207,6 +207,95 @@ def test_debugger_loop_max_steps():
         print(f"✅ test_debugger_loop_max_steps 通过: {res.error}")
 
 
+# —— CR 2026-06-17 1.1: FAILED 正则支持 TestClass::method —— #
+
+def test_debugger_regex_class_based_test():
+    """FAILED 正则必须正确解析 TestClass::test_method 格式（CR 2026-06-17 1.1）。"""
+    import re
+    line = "FAILED test_file.py::TestClass::test_method - AssertionError: assert 99 == 5"
+    m = re.match(r"FAILED\s+(\S+(?:::\S+)*)\s*[-:]\s*(.*)", line)
+    assert m, f"正则应匹配 class-based test，实际未匹配"
+    assert m.group(1) == "test_file.py::TestClass::test_method", \
+        f"test_name 应为完整路径，实际 {m.group(1)!r}"
+    assert "AssertionError" in m.group(2)
+    print(f"✅ test_debugger_regex_class_based_test 通过: {m.group(1)}")
+
+
+def test_debugger_regex_parametrized_test():
+    """FAILED 正则支持 parametrized test（CR 2026-06-17 1.1 扩展）。"""
+    import re
+    line = "FAILED test_mod.py::test_func[1-2-3] - assert 0"
+    m = re.match(r"FAILED\s+(\S+(?:::\S+)*)\s*[-:]\s*(.*)", line)
+    assert m, f"正则应匹配 parametrized test，实际未匹配"
+    assert "test_func[1-2-3]" in m.group(1)
+    print(f"✅ test_debugger_regex_parametrized_test 通过: {m.group(1)}")
+
+
+def test_debugger_regex_leading_space():
+    """FAILED 正则支持前导空格（CR 2026-06-17 3.3）。"""
+    import re
+    line = "  FAILED mod.py::test_x - error"
+    m = re.search(r"FAILED\s+(\S+(?:::\S+)*)", line)
+    assert m, f"re.search 应匹配前导空格的 FAILED 行，实际未匹配"
+    assert m.group(1) == "mod.py::test_x"
+    print(f"✅ test_debugger_regex_leading_space 通过: {m.group(1)}")
+
+
+def test_debugger_regex_simple():
+    """简单格式（原有行为回归）仍然工作。"""
+    import re
+    line = "FAILED test.py::test_x - assert 1 == 2"
+    m = re.match(r"FAILED\s+(\S+(?:::\S+)*)\s*[-:]\s*(.*)", line)
+    assert m
+    assert m.group(1) == "test.py::test_x"
+    assert "1 == 2" in m.group(2)
+    print(f"✅ test_debugger_regex_simple 通过: {m.group(1)}")
+
+
+# —— CR 2026-06-17 2.1: pytest 收集失败 fallback —— #
+
+def test_debugger_collection_failure_fallback():
+    """pytest 语法错误（收集失败，exit_code!=0 但无 FAILED 行）应有 fallback。"""
+    import tempfile, os
+    from agentflow import Checkpointer, StateGraph, StateSchema, START, END
+    from agentflow.nodes import debugger, route_after_debug
+
+    with tempfile.TemporaryDirectory() as td:
+        # 创建语法错误的测试文件
+        os.makedirs(os.path.join(td, "src"), exist_ok=True)
+        with open(os.path.join(td, "src", "task_t1.py"), "w") as f:
+            f.write("def foo(): return 1\n")
+        with open(os.path.join(td, "test_broken.py"), "w") as f:
+            f.write("def test_broken(\n")  # 语法错误：括号不闭合
+
+        cp = Checkpointer()
+        g = StateGraph(StateSchema(), max_steps=5)
+        g.add_node("debugger", debugger)
+        g.add_edge(START, "debugger")
+        g.add_conditional_edges("debugger", route_after_debug)
+        # dummy coder 只递增版本
+        def dummy_coder(state, ctx):
+            v = state.get("code_version", 0) + 1
+            return {"code_version": v, "log": []}
+        g.add_node("coder", dummy_coder)
+        app = g.compile(cp)
+
+        r = app.invoke({
+            "tasks": ["t1"],
+            "code_version": 1,
+            "workdir": td,
+            "artifacts": ["src/task_t1.py"],
+        }, thread_id="collection-fail")
+
+        # 应该检测到失败
+        assert r.state["tests_passed"] is False, f"语法错误应导致 tests_passed=False"
+        # 关键：test_failures 不应为空（CR 2026-06-17 2.1）
+        assert len(r.state["test_failures"]) >= 1, \
+            f"收集失败时 test_failures 不应为空，实际 {r.state['test_failures']}"
+        print(f"✅ test_debugger_collection_failure_fallback 通过: "
+              f"failures={r.state['test_failures']}")
+
+
 if __name__ == "__main__":
     test_debugger_no_test_files()
     test_debugger_all_pass()
@@ -214,4 +303,9 @@ if __name__ == "__main__":
     test_debugger_failure_structure()
     test_debugger_fallback_old_behavior()
     test_debugger_loop_max_steps()
+    test_debugger_regex_class_based_test()
+    test_debugger_regex_parametrized_test()
+    test_debugger_regex_leading_space()
+    test_debugger_regex_simple()
+    test_debugger_collection_failure_fallback()
     print("\n✅ 全部 test_debugger 测试通过\n")
