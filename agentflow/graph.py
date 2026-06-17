@@ -14,6 +14,7 @@ import ast
 import time
 import traceback
 import uuid
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set
@@ -167,9 +168,9 @@ class StateGraph:
         # 条件边目标未知：尽量用 AST 提取的字符串字面量作为可能目标集，
         # 静态分析拿不到时（lambda/partial 等）才退到「所有节点」这种最保守情况
         reachable: Set[str] = set()
-        queue: List[str] = list(self._entry)
+        queue: deque = deque(self._entry)
         while queue:
-            n = queue.pop(0)
+            n = queue.popleft()
             if n in reachable or n == END or n not in self._nodes:
                 continue
             reachable.add(n)
@@ -190,7 +191,7 @@ class StateGraph:
 
         # 5) 是否有路径到 END：反向 BFS
         reaches_end: Set[str] = set()
-        queue = []
+        queue = deque()
         for n in self._nodes:
             outs = self._edges.get(n, [])
             # 静态边连到 END、没有任何出边、或者有条件边，都算「可能到 END」
@@ -204,7 +205,7 @@ class StateGraph:
                 if o in incoming:
                     incoming[o].append(src)
         while queue:
-            n = queue.pop(0)
+            n = queue.popleft()
             for src in incoming[n]:
                 if src not in reaches_end:
                     reaches_end.add(src)
@@ -286,9 +287,33 @@ class StateGraph:
                 return
             # 其它节点（Name、Attribute 等）— 不递归到子节点，宁缺勿滥
 
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Return) and node.value is not None:
-                walk(node.value)
+        # 手动遍历而非 ast.walk：先定位被分析的 root function（route_ghost 等
+        # 模块级函数 def，对应 inspect.getsource 返回的源码的顶层 FunctionDef），
+        # 再遍历其 body，遇到嵌套函数/lambda 直接跳过其子树，避免把
+        # `def helper(): return "ghost"` 这种辅助函数的 return 误提取为
+        # 路由函数的可能目标。
+        _SKIP_SUBTREE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+        root = None
+        if isinstance(tree, ast.Module) and tree.body:
+            first = tree.body[0]
+            if isinstance(first, _SKIP_SUBTREE):
+                root = first
+
+        if root is None:
+            # fallback：源码不是单函数（如 eval 字符串 / 模块顶层 return）
+            # 退到 ast.walk，不做嵌套过滤，宁可误报也不漏报
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Return) and node.value is not None:
+                    walk(node.value)
+        else:
+            def visit(n: ast.AST) -> None:
+                for child in ast.iter_child_nodes(n):
+                    if isinstance(child, _SKIP_SUBTREE):
+                        continue  # 嵌套函数/lambda：跳子树，不递归
+                    if isinstance(child, ast.Return) and child.value is not None:
+                        walk(child.value)
+                    visit(child)
+            visit(root)
         return literals
 
     def _has_cycle(self) -> bool:

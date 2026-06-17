@@ -165,20 +165,22 @@ def test_cycle_is_info_not_blocking():
 # 5) 死胡同（无路径到 END）
 # ============================================================
 
-def test_dead_end_node_is_warning():
-    """没有路径到 END 的节点应是 warning。"""
+def test_node_with_no_edges_is_valid_terminal():
+    """无出边节点在 LangGraph 语义中是合法终端，不应报 error/warning。
+
+    「无出边」视作汇点（与 _reaches_end 保持一致），如果它本身不可达
+    （如孤立节点），会由可达性检查单独处理（unreachable error）。
+    """
     g = StateGraph()
     g.add_node("a", _noop)
     g.add_node("dead", _noop)
     g.add_edge(START, "a")
     g.add_edge("a", "dead")   # dead 没有任何出边
-    # dead 自身既无出边，也无到达 END 的路径——但 "无出边" 在 LangGraph 语义中
-    # 视作合法终端节点，validate 应当给 info 而非 warning
     issues = g.validate()
-    # 当前实现把「无出边」视作合法终端节点，所以 dead 不应触发 error
-    errs = [i for i in issues if i.level == "error" and i.node == "dead"]
-    assert not errs, f"无出边节点不应报 error: {[str(i) for i in errs]}"
-    print("✅ test_dead_end_node_is_warning")
+    # 「无出边」视作合法终端节点，所以 dead 不应触发任何 issue
+    related = [i for i in issues if i.node == "dead"]
+    assert not related, f"无出边节点不应触发 issue: {[str(i) for i in related]}"
+    print("✅ test_node_with_no_edges_is_valid_terminal")
 
 
 # ============================================================
@@ -233,6 +235,33 @@ def test_conditional_returns_end_is_fine():
     errs = [i for i in issues if i.level == "error"]
     assert not errs, [str(i) for i in errs]
     print("✅ test_conditional_returns_end_is_fine")
+
+
+def test_conditional_returns_nested_function_not_extracted():
+    """嵌套函数/lambda 内的 return 字符串不应被外层路由器提取（避免误报）。
+
+    复现：路由函数内部定义了一个辅助函数，辅助函数 return 一个未定义节点名。
+    修复前会把 "ghost" 当作外层路由的可能目标，给出 "未定义节点" warning。
+    修复后跳过嵌套子树，只看外层 return "b"。
+    """
+    def route_with_nested(state):
+        def helper():
+            return "ghost"  # 嵌套函数 return，不应被外层路由器提取
+        return "b"
+
+    g = StateGraph()
+    g.add_node("a", _noop)
+    g.add_node("b", _noop)
+    g.add_edge(START, "a")
+    g.add_edge("a", END)
+    g.add_conditional_edges("a", route_with_nested)
+    issues = g.validate()
+    warns = [i for i in issues if i.level == "warning"]
+    assert not any("未定义节点" in i.message for i in warns), \
+        f"嵌套函数 return 不应触发未定义节点 warning: {[str(i) for i in warns]}"
+    assert not any("ghost" in i.message for i in warns), \
+        f"嵌套函数返回的 'ghost' 不应被外层路由器提取: {[str(i) for i in warns]}"
+    print("✅ test_conditional_returns_nested_function_not_extracted")
 
 
 # ============================================================
@@ -315,11 +344,12 @@ ALL_TESTS = [
     test_node_reachable_via_conditional_is_not_error,
     test_duplicate_edge_is_warning,
     test_cycle_is_info_not_blocking,
-    test_dead_end_node_is_warning,
+    test_node_with_no_edges_is_valid_terminal,
     test_non_callable_router_is_error,
     test_conditional_returns_undefined_node_is_warning,
     test_conditional_returns_defined_node_no_warning,
     test_conditional_returns_end_is_fine,
+    test_conditional_returns_nested_function_not_extracted,
     test_to_mermaid_contains_all_nodes,
     test_to_mermaid_marks_conditional_edges,
     test_to_mermaid_includes_static_edges,
