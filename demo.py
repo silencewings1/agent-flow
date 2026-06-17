@@ -205,10 +205,109 @@ def scenario_config() -> None:
     print("       未设置 key 的真实 provider 会报清晰错误，mock 始终可离线运行。")
 
 
+def scenario_real_coder() -> None:
+    banner("场景 6 — 真实 Coder：写文件到 workdir")
+    import tempfile
+    workdir = tempfile.mkdtemp(prefix="af-demo-")
+    print(f"\n  workdir: {workdir}")
+
+    cp = Checkpointer()
+    schema = StateSchema(reducers={"log": append_reducer, "artifacts": append_reducer})
+    g = StateGraph(schema, max_steps=10)
+    g.add_node("planner", planner)
+    g.add_node("coder", coder)
+    g.add_edge(START, "planner")
+    g.add_edge("planner", "coder")
+    g.add_edge("coder", END)
+    app = g.compile(cp)
+
+    init = {
+        "requirement": "实现 fibonacci 函数, 写单元测试",
+        "workdir": workdir,
+    }
+    res = app.invoke(init, thread_id="real-coder")
+    assert res.status == "completed"
+    print(f"  artifacts: {res.state.get('artifacts')}")
+    # 验证文件实际存在
+    import os
+    for art in res.state.get("artifacts", []):
+        full = os.path.join(workdir, art)
+        exists = os.path.isfile(full)
+        size = os.path.getsize(full) if exists else 0
+        print(f"  {art}: exists={exists}, size={size}")
+        if exists:
+            with open(full) as f:
+                first_line = f.readline().rstrip()
+            print(f"    第一行: {first_line}")
+
+    # 清理
+    import shutil
+    shutil.rmtree(workdir, ignore_errors=True)
+
+
+def scenario_real_debugger() -> None:
+    banner("场景 7 — 真实 Debugger：pytest 回环")
+    import os
+    import tempfile
+    workdir = tempfile.mkdtemp(prefix="af-demo-dbg-")
+    print(f"\n  workdir: {workdir}")
+
+    # 先写一个会失败的测试文件
+    src_dir = os.path.join(workdir, "src")
+    os.makedirs(src_dir, exist_ok=True)
+    # 必须有 __init__.py 才能做 `from src.task_t1 import ...`
+    with open(os.path.join(src_dir, "__init__.py"), "w") as f:
+        f.write("# auto-generated package\n")
+    with open(os.path.join(src_dir, "task_t1.py"), "w") as f:
+        f.write("def fib(n):\n"
+                "    if n <= 1: return n\n"
+                "    return fib(n-1) + fib(n-2)\n")
+    with open(os.path.join(src_dir, "test_fib.py"), "w") as f:
+        f.write("from src.task_t1 import fib\n"
+                "def test_fib_0():\n    assert fib(0) == 0\n"
+                "def test_fib_5():\n    assert fib(5) == 99  # 故意写错\n")
+
+    cp = Checkpointer()
+    schema = StateSchema(reducers={"log": append_reducer, "artifacts": append_reducer})
+    g = StateGraph(schema, max_steps=10)
+    g.add_node("debugger", debugger)
+    g.add_edge(START, "debugger")
+    g.add_conditional_edges("debugger", route_after_debug)
+    # 加一个 dummy coder（不改文件，只递增版本）
+    def dummy_coder(state, ctx):
+        v = state.get("code_version", 0) + 1
+        return {"code_version": v, "log": [f"[Coder] 修复 v{v}"]}
+    g.add_node("coder", dummy_coder)
+    app = g.compile(cp)
+
+    init = {
+        "tasks": ["t1"],
+        "code_version": 1,
+        "workdir": workdir,
+        "artifacts": ["src/task_t1.py"],
+    }
+    res = app.invoke(init, thread_id="real-dbg")
+    # 第一次：测试失败 → 退回 coder
+    assert res.status in ("completed", "failed"), f"unexpected status: {res.status}"
+    if res.status == "completed":
+        print(f"  状态: {res.status}")
+        print(f"  tests_passed: {res.state.get('tests_passed')}")
+        print(f"  test_failures: {res.state.get('test_failures')}")
+    elif res.status == "failed":
+        print(f"  状态: failed (超过 max_steps，可能是正确的回环)")
+    for line in res.state.get("log", []):
+        print(f"    {line}")
+
+    import shutil
+    shutil.rmtree(workdir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     scenario_pipeline()
     scenario_parallel()
     scenario_retry()
     scenario_timetravel()
     scenario_config()
+    scenario_real_coder()
+    scenario_real_debugger()
     print("\n✅ 全部场景执行完毕\n")
