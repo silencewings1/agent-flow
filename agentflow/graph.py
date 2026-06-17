@@ -66,17 +66,6 @@ def _get_source(fn: Any) -> str:
         return textwrap.dedent(repr(fn))
 
 
-def _get_source(fn: Any) -> str:
-    """取 callable 的源码字符串。优先用 inspect.getsource（保留缩进与原貌），
-    失败时退到去缩进的 repr。"""
-    import inspect
-    try:
-        return inspect.getsource(fn)
-    except (OSError, TypeError):
-        import textwrap
-        return textwrap.dedent(repr(fn))
-
-
 @dataclass
 class NodeContext:
     """传给节点的运行时上下文。"""
@@ -96,13 +85,28 @@ class NodeContext:
             key: Optional[str] = None, **kwargs: Any) -> Any:
         """ctx.activity 的薄包装：所有工具调用走这里，自动获得缓存 + 审计。
 
-        缓存键自动加 "tool:" 前缀，避免与同节点 LLM activity 冲突。
-        若同节点同 step 对同一工具调多次（参数不同），应传 key="<disambiguator>"
-        让每次调用有独立缓存条目，否则会撞到第一次的缓存结果。
+        缓存键规则：
+        - 自动加 "tool:" 前缀，避免与同节点 LLM activity 冲突
+        - 若传 `key=<disambiguator>`，最终键是 `tool:<name>:<key>`
+        - 若不传，键是 `tool:<name>`
 
-        kwargs 里若含 input_summary，会透传给 activity()；其它 kwargs 被忽略。
+        关于 cache 命中（同 key）的语义（CR 2026-06-17 1.3）：
+        - **同 (name, key) 组合** 命中同一条缓存，无论 fn 是否不同
+        - 这是**有意**的：cache 假设"同 name 同 disambiguator 的调用产生同结果"
+        - 典型用法：每个 task 一个独立 key（key=task_id），让 P1-3 真实 Coder
+          写多文件时各自独立缓存
+        - 反例：传 `key="x"` 给 read_file A、再传 `key="x"` 给 read_file B
+          → 第二次会返回 A 的内容（撞缓存）
+        - 解决方案：**用更精确的 disambiguator**（如 file path、task id）
+
+        kwargs 行为（CR 2026-06-17 2.4）：
+        - 只识别 `input_summary`，透传给 activity()
+        - 未知 kwargs 会被静默忽略并打 WARN（避免 typo 静默失败）
         """
         input_summary = kwargs.pop("input_summary", "") if kwargs else ""
+        if kwargs:
+            # CR 2026-06-17 2.4: 未知 kwargs 警告（可能是 typo）
+            print(f"[ctx.tool] WARN: 忽略未知 kwargs: {list(kwargs.keys())}")
         full_key = f"tool:{name}:{key}" if key else f"tool:{name}"
         return self.activity(full_key, fn, input_summary=input_summary)
 

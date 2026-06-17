@@ -18,19 +18,35 @@ import time
 from typing import Any, Dict, List, Optional
 
 
-# run_cmd 命令白名单：只允许以下前缀的程序名；防止 LLM 误调 rm/mv/sudo 等
-# 列表之外的命令前缀会被拒绝
+# run_cmd 命令白名单：只允许以下前缀的程序名。
+#
+# 重要安全说明（CR 2026-06-17 指出）：
+#   本沙箱**不**是 OS 级安全边界。`_check_no_dotdot` 只能拦 ASCII 的 ".."，但
+#   `cat /etc/passwd` 这类带绝对路径的命令会绕过校验；白名单只对"首段 basename"
+#   做检查，无法防御 `git config core.fsmonitor` 这类 Git 内部机制。
+#
+#   设计原则：白名单**只**放 argv 完全可控的命令：
+#     - `pytest`：纯测试执行器，参数是测试文件路径
+#     - `git diff` / `git status` / `git rev-parse` 等只读子命令
+#     - `ls` / `cat` / `pwd` / `echo`：受 `_resolve_within_workdir` 限制
+#
+#   故意不放：
+#     - `python` / `python3` — `-c '...'` 是图灵完备的，可执行任意代码
+#     - `cd` — 会被 `cwd=self.workdir` 覆盖且容易混淆路径
+#     - `rm` / `mv` / `cp` / `chmod` / `sudo` — 明显危险
+#     - `curl` / `wget` / `ssh` — 网络外联
+#
+#   真实 LLM + 多租户场景下，**必须**接 Docker / gVisor 等真沙箱，
+#   本白名单只防止「LLM 误调 rm -rf」这类意外。
 _CMD_ALLOWED_PREFIXES = (
     "pytest",
-    "python",
-    "python3",
     "ls",
     "cat",
     "echo",
     "pwd",
-    "cd",
-    "git",  # 用于 git_diff 走 subprocess 兜底
-    "diff",  # patch 工具链相关
+    "sleep",  # 用于超时测试，无副作用
+    "git",
+    "diff",
     "patch",
 )
 
@@ -54,6 +70,32 @@ def _check_no_dotdot(path: str) -> None:
             raise PermissionError(
                 f"run_cmd 拒绝包含 '..' 路径穿越的输入: {token!r}"
             )
+
+
+def _check_paths_in_workdir(cmd: str, cmd_name: str, workdir: str) -> None:
+    """对 cat/ls 类文件读命令，校验所有路径参数都落在 workdir 内。
+
+    解决 CR 2026-06-17 1.2 提出的问题：白名单只校验首段 basename，
+    `cat /etc/passwd` 这种带绝对路径的命令原本会被放行。
+
+    实现：shlex 拆 token → 跳过选项（以 - 开头）→ 解析为绝对路径 →
+    校验前缀在 workdir 内。
+    """
+    import shlex
+    workdir_real = os.path.realpath(workdir)
+    for token in shlex.split(cmd)[1:]:  # 跳过命令名本身
+        if not token or token.startswith("-"):
+            continue
+        # 引号已被 shlex 剥掉
+        if os.path.isabs(token):
+            # 绝对路径：必须落在 workdir 内
+            real = os.path.realpath(token)
+            if not (real == workdir_real or real.startswith(workdir_real + os.sep)):
+                raise PermissionError(
+                    f"run_cmd {cmd_name!r} 拒绝绝对路径 {token!r}："
+                    f"必须落在 workdir {workdir_real} 内"
+                )
+        # 相对路径：subprocess 已经在 cwd=workdir 下跑，自动安全，无需校验
 
 
 def _resolve_within_workdir(workdir: str, path: str) -> str:
@@ -119,7 +161,14 @@ class ToolRuntime:
         实现策略：把 diff 写到临时文件，在 workdir 内调 `patch -p1 --dry-run` 校验
         hunk 匹配；校验通过后再 `patch -p1` 真正写入。失败时抛 RuntimeError，错误
         信息带 patch 的 stderr 摘要。
+
+        CR 2026-06-17 2.1: 空 diff 静默"成功"且创建空文件 —— 显式拒绝。
         """
+        # CR 2026-06-17 2.1: 拒绝空 diff，避免静默创建空文件
+        if not unified_diff or not unified_diff.strip():
+            raise ValueError(
+                f"apply_patch 需要非空 unified_diff（path={path!r}）"
+            )
         full = _resolve_within_workdir(self.workdir, path)
         # patch 需要文件存在（即使是空文件）；不存在则建空文件
         if not os.path.exists(full):
@@ -194,6 +243,9 @@ class ToolRuntime:
                 f"run_cmd 拒绝未在白名单中的命令: {first_base!r} "
                 f"（允许: {', '.join(_CMD_ALLOWED_PREFIXES)}）"
             )
+        # 对文件读命令（cat/ls），强制参数路径在 workdir 内（CR 2026-06-17:1.2）
+        if first_base in ("cat", "ls"):
+            _check_paths_in_workdir(cmd, first_base, self.workdir)
 
         t0 = time.time()
         try:
