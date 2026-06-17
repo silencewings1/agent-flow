@@ -232,10 +232,15 @@ def debugger(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     # 用 subprocess 直接跑在 workdir 内（不用 ToolRuntime，因为 ToolRuntime 有自己的
     # 沙箱 workdir，而 pytest 需要在源代码所在的 workdir 内跑才能正确 import）
     # 注意：必须用 "pytest" 直接命令（python3 已移出 run_cmd 白名单）
+    import shlex
     import subprocess as _subprocess
     import time as _time
-    test_files_arg = " ".join(test_files)
+    test_files_arg = shlex.join(test_files)
     cmd = f"pytest {test_files_arg} --tb=short -q"
+
+    # CR 2026-06-17 1.2: 虽然不用 ToolRuntime.run_cmd，但手动复用其安全检查
+    from .tools import _check_no_dotdot
+    _check_no_dotdot(cmd)
 
     def _run_pytest():
         t0 = _time.time()
@@ -282,14 +287,22 @@ def debugger(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
         # 格式 1: FAILED path::test_name - error_msg
         # 格式 2: FAILED path::test_name (无错误信息)
         for line in (stdout + "\n" + stderr).splitlines():
-            m = re.match(r"FAILED\s+(\S+?::\S+?)\s*[-:]\s*(.*)", line)
+            # CR 2026-06-17 1.1: 支持 TestClass::test_method 多级 :: 和 parametrized test
+            m = re.match(r"FAILED\s+(\S+(?:::\S+)*)\s*[-:]\s*(.*)", line)
             if m:
                 failures.append({"test_name": m.group(1), "error_msg": m.group(2).strip()})
                 continue
-            # 兜底：匹配没有错误消息的 FAILED 行
-            m2 = re.match(r"FAILED\s+(\S+?::\S+)", line)
+            # 兜底：匹配没有错误消息的 FAILED 行 + 支持前导空格（CR 2026-06-17 3.3）
+            m2 = re.search(r"FAILED\s+(\S+(?:::\S+)*)", line)
             if m2:
                 failures.append({"test_name": m2.group(1), "error_msg": "assertion failed"})
+        # CR 2026-06-17 2.1: pytest 收集失败（语法错误等）或 pytest 不可用
+        # exit_code != 0 但没有 FAILED 行 → 用 stderr 摘要作为 fallback
+        if not failures:
+            summary = (stderr or stdout or "").strip()
+            if not summary:
+                summary = f"pytest exit_code={exit_code}（无可用错误信息）"
+            failures.append({"test_name": "pytest_collection", "error_msg": summary[:500]})
 
     # LLM 总结（仅在 failures 非空时调）
     report = ""
