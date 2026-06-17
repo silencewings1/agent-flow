@@ -31,6 +31,29 @@ NodeFn = Callable[[Dict[str, Any], "NodeContext"], Optional[Dict[str, Any]]]
 # 条件边路由函数：接收 state → 返回下一个（或多个）节点名。
 RouterFn = Callable[[Dict[str, Any]], Any]
 
+# 异常类型名 → 异常类的映射，用于 activity 缓存恢复时还原原始异常类型
+_EXC_MAP: Dict[str, type] = {
+    "ValueError": ValueError,
+    "TypeError": TypeError,
+    "KeyError": KeyError,
+    "IndexError": IndexError,
+    "AttributeError": AttributeError,
+    "RuntimeError": RuntimeError,
+    "StopIteration": StopIteration,
+    "ZeroDivisionError": ZeroDivisionError,
+    "FileNotFoundError": FileNotFoundError,
+    "PermissionError": PermissionError,
+    "OSError": OSError,
+    "ImportError": ImportError,
+    "ModuleNotFoundError": ModuleNotFoundError,
+    "LookupError": LookupError,
+    "AssertionError": AssertionError,
+    "OverflowError": OverflowError,
+    "RecursionError": RecursionError,
+    "EOFError": EOFError,
+    "MemoryError": MemoryError,
+}
+
 
 def _get_source(fn: Any) -> str:
     """取 callable 的源码字符串。优先用 inspect.getsource（保留缩进与原貌），
@@ -59,27 +82,34 @@ class NodeContext:
         return _interrupt(payload, self.resume_value)
 
     def activity(self, key: str, fn: Callable[[], Any]) -> Any:
-        """以 (thread_id, node, key) 为键缓存 fn() 的结果。
+        """以 (thread_id, node, step, key) 为键缓存 fn() 的结果。
 
         首次执行时调用 fn() 并写入 checkpointer.activity_results 表；
         后续调用（包括中断恢复）直接读取缓存，不再执行 fn()。
-        fn() 抛异常时也写入 status="exception"，重入时重抛。
+        fn() 抛异常时也写入 status="exception"，重入时重抛（保留异常类型）。
         """
         if self._cp is None:
             return fn()
-        cached = self._cp.get_activity(self.thread_id, self.node, key)
+        cached = self._cp.get_activity(self.thread_id, self.node, self.step, key)
         if cached is not None:
             result, status = cached
             if status == "exception":
+                # 尝试还原原始异常类型
+                if isinstance(result, dict) and "type" in result and "message" in result:
+                    exc_type = _EXC_MAP.get(result["type"], RuntimeError)
+                    raise exc_type(result["message"])
                 raise RuntimeError(str(result))
             return result
         try:
             result = fn()
-            self._cp.put_activity(self.thread_id, self.node, key, result, "success")
-            return result
         except Exception as exc:
-            self._cp.put_activity(self.thread_id, self.node, key, str(exc), "exception")
+            exc_info = {"type": type(exc).__name__, "message": str(exc)}
+            self._cp.put_activity(self.thread_id, self.node, self.step,
+                                  key, exc_info, "exception")
             raise
+        self._cp.put_activity(self.thread_id, self.node, self.step,
+                              key, result, "success")
+        return result
 
 
 @dataclass
