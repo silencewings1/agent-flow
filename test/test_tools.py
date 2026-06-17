@@ -172,7 +172,8 @@ def test_run_cmd_success():
     f = _ToolFixture()
     f.setup()
     try:
-        result = f.rt.run_cmd("python3 -c 'print(1)'")
+        # CR 2026-06-17: python3 移出白名单；改用 echo 验证 exit 0 路径
+        result = f.rt.run_cmd("echo 1")
         assert result["exit_code"] == 0, f"exit_code 应为 0，实际 {result['exit_code']}"
         assert result["stdout"].strip() == "1", f"stdout 应为 '1'，实际 {result['stdout']!r}"
         assert result["duration_ms"] >= 0
@@ -187,7 +188,8 @@ def test_run_cmd_nonzero_exit():
     f = _ToolFixture()
     f.setup()
     try:
-        result = f.rt.run_cmd("python3 -c 'raise SystemExit(1)'")
+        # 改用 cat 一个不存在的文件来触发非零退出
+        result = f.rt.run_cmd("cat nonexistent_file_xyz")
         assert result["exit_code"] != 0, f"exit_code 应非零，实际 {result['exit_code']}"
         # run_cmd 自身不抛异常（非零退出是正常结果，由调用方处理）
         print(f"✅ test_run_cmd_nonzero_exit 通过 (exit_code={result['exit_code']})")
@@ -218,8 +220,9 @@ def test_run_cmd_timeout():
     f = _ToolFixture()
     f.setup()
     try:
+        # CR 2026-06-17: python3 移出白名单；改用 sleep 触发超时
         try:
-            f.rt.run_cmd("python3 -c 'import time; time.sleep(5)'", timeout=0.5)
+            f.rt.run_cmd("sleep 5", timeout=0.5)
         except TimeoutError as e:
             assert "超时" in str(e) or "timeout" in str(e).lower()
             print(f"✅ test_run_cmd_timeout 通过 ({e})")
@@ -351,6 +354,135 @@ def test_tool_key_disambiguates_multiple_calls():
         f.teardown()
 
 
+# —— 15) CR 2026-06-17 1.3: 同 key + 不同 fn 撞缓存 —— #
+
+def test_tool_key_collision_known_behavior():
+    """同 key + 不同 fn：第二次命中第一次的缓存（这是有意行为，仅文档化）。"""
+    f = _ToolFixture()
+    f.setup()
+    try:
+        f.rt.write_file("a.txt", "content A")
+        f.rt.write_file("b.txt", "content B")
+        g = StateGraph(StateSchema())
+        call_count = {"a": 0, "b": 0}
+        def reader(state, ctx):
+            # 同 key="x" 给两个不同文件
+            r1 = ctx.tool("read_file", key="x", fn=lambda: (call_count.__setitem__("a", call_count["a"]+1) or f.rt.read_file("a.txt")))
+            r2 = ctx.tool("read_file", key="x", fn=lambda: (call_count.__setitem__("b", call_count["b"]+1) or f.rt.read_file("b.txt")))
+            return {"a": r1, "b": r2, "log": []}
+        g.add_node("reader", reader)
+        g.add_edge(START, "reader")
+        g.add_edge("reader", END)
+        app = g.compile(Checkpointer())
+        r = app.invoke({}, thread_id="collision_test")
+        # 第二次调用因为 key 撞缓存，fn 不执行，直接返回第一次结果
+        assert r.state["a"] == "content A"
+        assert r.state["b"] == "content A", f"撞缓存：b 应返回 a 的结果，实际 {r.state['b']!r}"
+        assert call_count["a"] == 1
+        assert call_count["b"] == 0, f"撞缓存后第二次 fn 不应执行，实际 call_count['b']={call_count['b']}"
+        print("✅ test_tool_key_collision_known_behavior 通过（同 key 撞缓存是已知行为）")
+    finally:
+        f.teardown()
+
+
+# —— 16) CR 2026-06-17 2.4: ctx.tool() 未知 kwargs 打印 WARN —— #
+
+def test_tool_warns_on_unknown_kwargs():
+    """传未知 kwargs 应打 WARN，不静默忽略。"""
+    f = _ToolFixture()
+    f.setup()
+    try:
+        f.rt.write_file("a.txt", "x")
+        g = StateGraph(StateSchema())
+        def reader(state, ctx):
+            # 故意 typo: input_sumary（漏字母 m）
+            content = ctx.tool("read_file", fn=lambda: f.rt.read_file("a.txt"), input_sumary="oops")
+            return {"content": content}
+        g.add_node("reader", reader)
+        g.add_edge(START, "reader")
+        g.add_edge("reader", END)
+        app = g.compile(Checkpointer())
+        # 捕获 stdout
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            r = app.invoke({}, thread_id="kwarg_test")
+        output = buf.getvalue()
+        assert "WARN" in output and "input_sumary" in output, f"应打 WARN 含 typo key，实际输出: {output!r}"
+        assert r.status == "completed"
+        print("✅ test_tool_warns_on_unknown_kwargs 通过")
+    finally:
+        f.teardown()
+
+
+# —— 17) CR 2026-06-17 1.1+1.2: run_cmd 沙箱强化 —— #
+
+def test_run_cmd_rejects_python3():
+    """白名单移除 python/python3 后，`python3 -c '...'` 应被拒绝。"""
+    f = _ToolFixture()
+    f.setup()
+    try:
+        try:
+            f.rt.run_cmd("python3 -c 'print(1)'")
+            assert False, "应拒绝 python3 但接受了"
+        except PermissionError as e:
+            assert "python3" in str(e) or "白名单" in str(e), f"错误信息应提及 python3/白名单: {e}"
+        print("✅ test_run_cmd_rejects_python3 通过")
+    finally:
+        f.teardown()
+
+
+def test_run_cmd_cat_rejects_absolute_path():
+    """`cat /etc/passwd` 应被 workdir 路径校验拒绝。"""
+    f = _ToolFixture()
+    f.setup()
+    try:
+        try:
+            f.rt.run_cmd("cat /etc/passwd")
+            assert False, "应拒绝绝对路径但接受了"
+        except PermissionError as e:
+            assert "绝对路径" in str(e) or "workdir" in str(e), f"错误信息应提 workdir: {e}"
+        print("✅ test_run_cmd_cat_rejects_absolute_path 通过")
+    finally:
+        f.teardown()
+
+
+def test_run_cmd_cat_accepts_relative_path():
+    """`cat a.txt`（相对路径）应正常执行。"""
+    f = _ToolFixture()
+    f.setup()
+    try:
+        f.rt.write_file("a.txt", "hello\n")
+        out = f.rt.run_cmd("cat a.txt")
+        assert out["exit_code"] == 0
+        assert "hello" in out["stdout"]
+        print("✅ test_run_cmd_cat_accepts_relative_path 通过")
+    finally:
+        f.teardown()
+
+
+# —— 18) CR 2026-06-17 2.1: apply_patch 空 diff 拒绝 —— #
+
+def test_apply_patch_rejects_empty_diff():
+    """空 unified_diff 应抛 ValueError，不静默创建空文件。"""
+    f = _ToolFixture()
+    f.setup()
+    try:
+        for empty in ("", "   ", "\n\n"):
+            try:
+                f.rt.apply_patch("evil.py", empty)
+                assert False, f"应拒绝空 diff {empty!r} 但接受了"
+            except ValueError as e:
+                assert "非空" in str(e), f"错误信息应提'非空': {e}"
+        # 验证文件确实没创建
+        assert not os.path.exists(os.path.join(f.rt.workdir, "evil.py")), \
+            "空 diff 不应创建文件"
+        print("✅ test_apply_patch_rejects_empty_diff 通过")
+    finally:
+        f.teardown()
+
+
 # —— 13) git_diff 在非 git 仓库中返回 "" —— #
 
 def test_git_diff_in_non_git_repo():
@@ -385,6 +517,12 @@ def main() -> int:
         test_tool_caching,
         test_cleanup_removes_workdir,
         test_tool_key_disambiguates_multiple_calls,
+        test_tool_key_collision_known_behavior,
+        test_tool_warns_on_unknown_kwargs,
+        test_run_cmd_rejects_python3,
+        test_run_cmd_cat_rejects_absolute_path,
+        test_run_cmd_cat_accepts_relative_path,
+        test_apply_patch_rejects_empty_diff,
         test_git_diff_in_non_git_repo,
     ]
     failed = 0
