@@ -210,14 +210,14 @@ def debugger(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
             "log": [f"[Debugger] 测试 v{version}: {'通过' if passed else '失败 → 退回 Coder'}"],
         }
 
-    # 发现测试文件：**/test_*.py + **/*_test.py
+    # 发现测试文件：**/test_*.py + **/*_test.py（相对于 workdir）
     test_files = []
     for root, dirs, files in _os.walk(workdir):
         for f in files:
             if f.startswith("test_") and f.endswith(".py"):
-                test_files.append(_os.path.join(root, f))
+                test_files.append(_os.path.relpath(_os.path.join(root, f), workdir))
             elif f.endswith("_test.py"):
-                test_files.append(_os.path.join(root, f))
+                test_files.append(_os.path.relpath(_os.path.join(root, f), workdir))
 
     if not test_files:
         # 兜底：无测试文件 = 默认通过
@@ -229,16 +229,37 @@ def debugger(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
         }
 
     # 跑 pytest
+    # 用 subprocess 直接跑在 workdir 内（不用 ToolRuntime，因为 ToolRuntime 有自己的
+    # 沙箱 workdir，而 pytest 需要在源代码所在的 workdir 内跑才能正确 import）
     # 注意：必须用 "pytest" 直接命令（python3 已移出 run_cmd 白名单）
+    import subprocess as _subprocess
+    import time as _time
     test_files_arg = " ".join(test_files)
     cmd = f"pytest {test_files_arg} --tb=short -q"
 
-    from agentflow.tools import ToolRuntime
-    rt = ToolRuntime(ctx.thread_id, root=_os.path.dirname(workdir))
+    def _run_pytest():
+        t0 = _time.time()
+        try:
+            proc = _subprocess.run(
+                cmd, shell=True, cwd=workdir,
+                capture_output=True, text=True, timeout=120,
+            )
+        except _subprocess.TimeoutExpired:
+            return {
+                "exit_code": -1, "stdout": "", "stderr": "timeout",
+                "duration_ms": 120000, "error": "timeout",
+            }
+        duration_ms = (_time.time() - t0) * 1000
+        return {
+            "exit_code": proc.returncode,
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+            "duration_ms": duration_ms,
+        }
 
     try:
         result = ctx.tool("run_cmd", key=f"pytest_v{version}",
-                         fn=lambda: rt.run_cmd(cmd, timeout=120),
+                         fn=_run_pytest,
                          input_summary=f"pytest v{version}")
     except Exception as e:
         # run_cmd 本身失败（超时/PermissionError 等）
@@ -257,11 +278,18 @@ def debugger(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     tests_passed = exit_code == 0
     failures = []
     if not tests_passed:
-        # 提取 FAILED 行：FAILED test_xxx.py::test_name - error_msg
+        # 提取 FAILED 行：两种格式都兼容
+        # 格式 1: FAILED path::test_name - error_msg
+        # 格式 2: FAILED path::test_name (无错误信息)
         for line in (stdout + "\n" + stderr).splitlines():
             m = re.match(r"FAILED\s+(\S+?::\S+?)\s*[-:]\s*(.*)", line)
             if m:
                 failures.append({"test_name": m.group(1), "error_msg": m.group(2).strip()})
+                continue
+            # 兜底：匹配没有错误消息的 FAILED 行
+            m2 = re.match(r"FAILED\s+(\S+?::\S+)", line)
+            if m2:
+                failures.append({"test_name": m2.group(1), "error_msg": "assertion failed"})
 
     # LLM 总结（仅在 failures 非空时调）
     report = ""

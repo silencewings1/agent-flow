@@ -278,6 +278,7 @@ def scenario_real_debugger() -> None:
         v = state.get("code_version", 0) + 1
         return {"code_version": v, "log": [f"[Coder] 修复 v{v}"]}
     g.add_node("coder", dummy_coder)
+    g.add_edge("coder", "debugger")  # 回环：coder 修完后 debugger 再测
     app = g.compile(cp)
 
     init = {
