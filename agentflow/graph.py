@@ -92,6 +92,15 @@ class NodeContext:
         from .interrupt import interrupt as _interrupt
         return _interrupt(payload, self.resume_value)
 
+    def tool(self, name: str, fn: Callable[[], Any], **kwargs: Any) -> Any:
+        """ctx.activity 的薄包装：所有工具调用走这里，自动获得缓存 + 审计。
+
+        缓存键自动加 "tool:" 前缀，避免与同节点 LLM activity 冲突。
+        kwargs 里若含 input_summary，会透传给 activity()；其它 kwargs 被忽略。
+        """
+        input_summary = kwargs.pop("input_summary", "") if kwargs else ""
+        return self.activity(f"tool:{name}", fn, input_summary=input_summary)
+
     def activity(self, key: str, fn: Callable[[], Any],
                  input_summary: str = "") -> Any:
         """以 (thread_id, node, step, key) 为键缓存 fn() 的结果。
