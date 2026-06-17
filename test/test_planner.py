@@ -221,19 +221,21 @@ def test_planner_works_with_mock_llm():
 
 def test_full_pipeline_demo_compatible():
     """与 demo.py scenario_pipeline 行为兼容：plan=dict / tasks=id 列表，planner 之后各节点能跑通。"""
-    from agentflow.nodes import coder, debugger, reviewer, route_after_debug, route_after_review
+    from agentflow.nodes import coder, debugger, ai_review, human_review, route_after_debug, route_after_human_review
 
     schema = StateSchema()
     g = StateGraph(schema, max_steps=30)
     g.add_node("planner", planner)
     g.add_node("coder", coder)
     g.add_node("debugger", debugger)
-    g.add_node("reviewer", reviewer)
+    g.add_node("ai_review", ai_review)
+    g.add_node("human_review", human_review)
     g.add_edge(START, "planner")
     g.add_edge("planner", "coder")
     g.add_edge("coder", "debugger")
     g.add_conditional_edges("debugger", route_after_debug)
-    g.add_conditional_edges("reviewer", route_after_review)
+    g.add_edge("ai_review", "human_review")
+    g.add_conditional_edges("human_review", route_after_human_review)
     app = g.compile(Checkpointer())
     res = app.invoke(
         {"requirement": "实现登录接口，加上单元测试，写好文档", "pass_at_version": 3},
