@@ -224,6 +224,91 @@ def test_activity_without_checkpointer():
     print("✅ test_activity_without_checkpointer 通过")
 
 
+def test_tool_calls_logged():
+    """首次调用 activity 时自动写入 tool_calls 记录。"""
+    counter: Dict[Tuple[str, str], int] = {}
+
+    g = StateGraph(StateSchema())
+    g.add_node("a", make_activity_node("a", "x", return_value="tool_result", counter=counter))
+    g.add_edge(START, "a")
+    g.add_edge("a", END)
+    cp = Checkpointer()
+    app = g.compile(cp)
+
+    r = app.invoke({}, thread_id="t_tool_log")
+    assert r.status == "completed"
+
+    records = cp.tool_calls("t_tool_log")
+    assert len(records) == 1, f"应有 1 条 tool_call 记录，实际 {len(records)}"
+    rec = records[0]
+    assert rec["node"] == "a"
+    assert rec["tool_name"] == "x"
+    assert rec["activity_key"] == "x"
+    assert rec["status"] == "success"
+    assert rec["duration_ms"] > 0
+    assert rec["seq"] == 0
+    assert rec["step"] == 1
+    print(f"✅ test_tool_calls_logged 通过 (duration_ms={rec['duration_ms']:.2f})")
+
+
+def test_tool_call_summary():
+    """tool_call_summary 按 node 聚合统计正确。"""
+    counter: Dict[Tuple[str, str], int] = {}
+
+    def multi_call_node(state, ctx):
+        r1 = ctx.activity("llm_1", lambda: _do("mc", "llm_1", "a", counter))
+        r2 = ctx.activity("llm_2", lambda: _do("mc", "llm_2", "b", counter))
+        return {"r1": r1, "r2": r2}
+
+    g = StateGraph(StateSchema())
+    g.add_node("mc", multi_call_node)
+    g.add_edge(START, "mc")
+    g.add_edge("mc", END)
+    cp = Checkpointer()
+    app = g.compile(cp)
+
+    r = app.invoke({}, thread_id="t_summary")
+    assert r.status == "completed"
+
+    summary = cp.tool_call_summary("t_summary")
+    assert len(summary) == 1, f"应有 1 个节点统计，实际 {len(summary)}"
+    s = summary[0]
+    assert s["node"] == "mc"
+    assert s["calls"] == 2, f"mc 节点应有 2 次调用，实际 {s['calls']}"
+    assert s["successes"] == 2
+    assert s["failures"] == 0
+    assert s["total_duration_ms"] >= 0
+    print(f"✅ test_tool_call_summary 通过 (calls={s['calls']}, total={s['total_duration_ms']}ms)")
+
+
+def test_tool_call_not_logged_on_cache_hit():
+    """缓存命中时不应产生新的 tool_call 记录。"""
+    counter: Dict[Tuple[str, str], int] = {}
+
+    g = StateGraph(StateSchema())
+    g.add_node("a", make_activity_node("a", "x", return_value="cached", counter=counter))
+    g.add_edge(START, "a")
+    g.add_edge("a", END)
+    cp = Checkpointer()
+    app = g.compile(cp)
+
+    # 第一次执行：产生 1 条 tool_call 记录
+    r1 = app.invoke({}, thread_id="t_cache_hit")
+    assert r1.status == "completed"
+    records1 = cp.tool_calls("t_cache_hit")
+    assert len(records1) == 1, f"首次应有 1 条记录，实际 {len(records1)}"
+    seq1 = records1[0]["seq"]
+
+    # 第二次执行（同 thread）：缓存命中，不应新增 tool_call
+    r2 = app.invoke({}, thread_id="t_cache_hit")
+    assert r2.status == "completed"
+    records2 = cp.tool_calls("t_cache_hit")
+    assert len(records2) == 1, f"缓存命中后不应新增记录，实际 {len(records2)}"
+    assert records2[0]["seq"] == seq1, f"seq 应一致，实际 {records2[0]['seq']}"
+
+    print("✅ test_tool_call_not_logged_on_cache_hit 通过")
+
+
 if __name__ == "__main__":
     test_first_call_executes_fn()
     test_cached_on_resume()
@@ -232,4 +317,7 @@ if __name__ == "__main__":
     test_exception_is_cached()
     test_complex_types()
     test_activity_without_checkpointer()
+    test_tool_calls_logged()
+    test_tool_call_summary()
+    test_tool_call_not_logged_on_cache_hit()
     print("\n✅ 全部 activity 测试通过\n")

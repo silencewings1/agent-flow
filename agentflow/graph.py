@@ -92,12 +92,16 @@ class NodeContext:
         from .interrupt import interrupt as _interrupt
         return _interrupt(payload, self.resume_value)
 
-    def activity(self, key: str, fn: Callable[[], Any]) -> Any:
+    def activity(self, key: str, fn: Callable[[], Any],
+                 input_summary: str = "") -> Any:
         """以 (thread_id, node, step, key) 为键缓存 fn() 的结果。
 
         首次执行时调用 fn() 并写入 checkpointer.activity_results 表；
         后续调用（包括中断恢复）直接读取缓存，不再执行 fn()。
         fn() 抛异常时也写入 status="exception"，重入时重抛（保留异常类型）。
+
+        每次缓存未命中时会自动记录 tool_call 日志（含执行耗时）。
+        参数 input_summary 用于描述本次调用的输入概况。
         """
         if self._cp is None:
             return fn()
@@ -111,16 +115,49 @@ class NodeContext:
                     raise exc_type(result["message"])
                 raise RuntimeError(str(result))
             return result
+        t0 = time.time()
         try:
             result = fn()
         except Exception as exc:
+            duration_ms = (time.time() - t0) * 1000
             exc_info = {"type": type(exc).__name__, "message": str(exc)}
             self._cp.put_activity(self.thread_id, self.node, self.step,
                                   key, exc_info, "exception")
+            self._cp.log_tool_call(
+                self.thread_id, self.node, self.step,
+                tool_name=key, activity_key=key,
+                input_summary=input_summary,
+                output_summary=f"exception: {type(exc).__name__}",
+                duration_ms=duration_ms, status="exception",
+            )
             raise
+        duration_ms = (time.time() - t0) * 1000
+        output_summary = self._make_output_summary(result)
         self._cp.put_activity(self.thread_id, self.node, self.step,
                               key, result, "success")
+        self._cp.log_tool_call(
+            self.thread_id, self.node, self.step,
+            tool_name=key, activity_key=key,
+            input_summary=input_summary,
+            output_summary=output_summary,
+            duration_ms=duration_ms, status="success",
+        )
         return result
+
+    @staticmethod
+    def _make_output_summary(result: Any) -> str:
+        """从 result 自动生成 output_summary。"""
+        if isinstance(result, str):
+            return result[:100]
+        if isinstance(result, dict):
+            return f"dict(keys={list(result.keys())})"
+        if isinstance(result, list):
+            return f"list(len={len(result)})"
+        if isinstance(result, tuple):
+            return f"tuple(len={len(result)})"
+        if result is None:
+            return "None"
+        return str(result)[:100]
 
 
 @dataclass

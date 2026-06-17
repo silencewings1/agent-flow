@@ -61,6 +61,26 @@ class Checkpointer:
         )
         self._conn.commit()
 
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tool_calls (
+                thread_id     TEXT NOT NULL,
+                seq           INTEGER NOT NULL,
+                node          TEXT NOT NULL,
+                step          INTEGER NOT NULL,
+                tool_name     TEXT NOT NULL,
+                activity_key  TEXT NOT NULL,
+                input_summary TEXT,
+                output_summary TEXT,
+                duration_ms   REAL NOT NULL,
+                status        TEXT NOT NULL,
+                ts            REAL NOT NULL,
+                PRIMARY KEY (thread_id, seq)
+            )
+            """
+        )
+        self._conn.commit()
+
         # —— activity 缓存：以 (thread_id, node, step, activity_key) 为键缓存 LLM 等调用 —— #
         self._conn.execute(
             """
@@ -165,6 +185,59 @@ class Checkpointer:
         ).fetchall()
         return [
             {"seq": r[0], "kind": r[1], "payload": json.loads(r[2]) if r[2] else None, "ts": r[3]}
+            for r in rows
+        ]
+
+    def log_tool_call(self, thread_id: str, node: str, step: int,
+                       tool_name: str, activity_key: str,
+                       input_summary: str = "", output_summary: str = "",
+                       duration_ms: float = 0.0, status: str = "success") -> None:
+        with self._lock:
+            seq = self._conn.execute(
+                "SELECT COALESCE(MAX(seq), -1) + 1 FROM tool_calls WHERE thread_id=?",
+                (thread_id,),
+            ).fetchone()[0]
+            self._conn.execute(
+                "INSERT INTO tool_calls VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (thread_id, seq, node, step, tool_name, activity_key,
+                 input_summary, output_summary, duration_ms, status, time.time()),
+            )
+            self._conn.commit()
+
+    def tool_calls(self, thread_id: str) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT seq, node, step, tool_name, activity_key, "
+            "input_summary, output_summary, duration_ms, status, ts "
+            "FROM tool_calls WHERE thread_id=? ORDER BY seq ASC",
+            (thread_id,),
+        ).fetchall()
+        return [
+            {
+                "seq": r[0], "node": r[1], "step": r[2],
+                "tool_name": r[3], "activity_key": r[4],
+                "input_summary": r[5], "output_summary": r[6],
+                "duration_ms": r[7], "status": r[8], "ts": r[9],
+            }
+            for r in rows
+        ]
+
+    def tool_call_summary(self, thread_id: str) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT node, COUNT(*) AS calls, "
+            "ROUND(SUM(duration_ms), 2) AS total_duration_ms, "
+            "ROUND(AVG(duration_ms), 2) AS avg_duration_ms, "
+            "SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS successes, "
+            "SUM(CASE WHEN status='exception' THEN 1 ELSE 0 END) AS failures "
+            "FROM tool_calls WHERE thread_id=? "
+            "GROUP BY node ORDER BY node",
+            (thread_id,),
+        ).fetchall()
+        return [
+            {
+                "node": r[0], "calls": r[1],
+                "total_duration_ms": r[2], "avg_duration_ms": r[3],
+                "successes": r[4], "failures": r[5],
+            }
             for r in rows
         ]
 
