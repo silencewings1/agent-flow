@@ -26,26 +26,29 @@ from agentflow.nodes import (
     coder,
     debugger,
     planner,
-    reviewer,
+    ai_review,
+    human_review,
     route_after_debug,
-    route_after_review,
+    route_after_human_review,
 )
 
 
 def build_pipeline(checkpointer: Checkpointer):
-    """需求 → 分解 → 开发 →(测试回环)→ 评审(人在回路) → 完成。"""
+    """需求 → 分解 → 开发 →(测试回环)→ AI 评审 → 人工审批(人在回路) → 完成。"""
     schema = StateSchema(reducers={"log": append_reducer})
     g = StateGraph(schema, max_steps=30)
     g.add_node("planner", planner)
     g.add_node("coder", coder)
     g.add_node("debugger", debugger)
-    g.add_node("reviewer", reviewer)
+    g.add_node("ai_review", ai_review)
+    g.add_node("human_review", human_review)
 
     g.add_edge(START, "planner")
     g.add_edge("planner", "coder")
     g.add_edge("coder", "debugger")
-    g.add_conditional_edges("debugger", route_after_debug)   # 失败→coder，通过→reviewer
-    g.add_conditional_edges("reviewer", route_after_review)  # 打回→coder，合并→END
+    g.add_conditional_edges("debugger", route_after_debug)        # 失败→coder，通过→ai_review
+    g.add_edge("ai_review", "human_review")                       # AI 评审后等待人工
+    g.add_conditional_edges("human_review", route_after_human_review)  # 打回→coder，合并→END
     return g.compile(checkpointer)
 
 
@@ -67,7 +70,7 @@ def scenario_pipeline() -> None:
     }
     res = app.invoke(init, thread_id=tid)
     print(f"\n→ 第一次返回: status={res.status}, step={res.step}")
-    assert res.status == "interrupted", "应在 Reviewer 处中断等待人工"
+    assert res.status == "interrupted", "应在 human_review 处中断等待人工"
     print(f"  中断载荷(等待人工): {res.interrupt_payload}")
 
     # —— 模拟人工：先打回一次，看它退回 Coder 再回到评审 —— #
