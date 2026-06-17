@@ -84,39 +84,44 @@ r = app.invoke({"requirement": "..."}, thread_id="job-1")  # → interrupted
 r = app.invoke({}, thread_id="job-1", command=Command(resume={"approve": True}))  # → completed
 ```
 
-## 接入真实 LLM：每节点独立配置（Claude / OpenAI）
+## 接入真实 LLM：每节点独立配置
 
-接入点做成**配置文件**（JSON），每个节点可单独指定 provider、模型与参数。同时支持 **Anthropic (Claude)** 与 **OpenAI**，未配置的节点退化为 mock，demo 无需任何 key 即可离线运行。实现见 [llm.py](agentflow/llm.py)，零三方依赖（标准库 `urllib` 直连两家 HTTP API）。
+LLM 接入全部通过**配置文件**（JSON），每个节点可单独指定 provider、模型与参数。所有厂商（包括 Anthropic、OpenAI、火山方舟等）均通过配置文件的 `providers` 字段声明，代码中不硬编码任何厂商。未配置的节点退化为 mock，demo 无需任何 key 即可离线运行。实现见 [llm.py](agentflow/llm.py)，零三方依赖（标准库 `urllib` 直连 HTTP API）。
 
-### 1) 写配置文件
-
-复制 [conf/llm_config.example.json](conf/llm_config.example.json) 为项目根目录下的 `llm_config.json`：
+### 配置文件结构
 
 ```json
 {
-  "defaults": { "temperature": 0.3, "max_tokens": 2048 },
+  "providers": {
+    "anthropic": {
+      "base_url": "https://api.anthropic.com/v1/messages",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "model": "claude-opus-4-8",
+      "protocol": "anthropic"
+    },
+    "volcengine": {
+      "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
+      "api_key_env": "VOLCENGINE_API_KEY",
+      "model": "ark-code-latest",
+      "protocol": "openai"
+    }
+  },
+  "defaults": { "provider": "volcengine", "temperature": 0.3, "max_tokens": 2048 },
   "nodes": {
-    "planner":  { "provider": "anthropic", "model": "claude-opus-4-8",
-                  "system": "你是资深需求分析师，把需求拆成可执行子任务" },
-    "coder":    { "provider": "openai",    "model": "gpt-4o" },
-    "debugger": { "provider": "anthropic", "model": "claude-sonnet-4-6" },
+    "planner":  { "model": "ark-code-latest", "system": "你是资深需求分析师" },
+    "coder":    { "model": "ark-code-latest", "system": "你是高级工程师，只输出代码" },
+    "debugger": { "model": "ark-code-latest" },
     "reviewer": { "provider": "mock" }
   }
 }
 ```
 
-每节点最终配置 = `provider 默认值 ← defaults ← nodes[name]`（后者优先）。下划线开头的键（如 `_comment`）会被忽略，可用作注释。
+- **`providers`**：声明项目支持哪些厂商。`protocol` 字段决定 HTTP API 格式——`"anthropic"`（Claude Messages API）或 `"openai"`（OpenAI Chat Completions，兼容火山方舟等）。
+- **`defaults`**：所有节点的默认配置。
+- **`nodes`**：每个节点的独立配置，优先级 `provider 协议默认 ← defaults ← nodes[name]`。
+- 下划线开头的键（如 `_comment`）会被忽略，可用作注释。
 
-### 2) 设置 API Key（环境变量，不落配置文件）
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-export OPENAI_API_KEY=sk-...
-```
-
-变量名可在配置里用 `api_key_env` 覆盖。Key 只从环境读取，不写进 JSON、不回显到错误信息。
-
-### 3) 在节点里调用
+### 在节点里调用
 
 ```python
 from agentflow.llm import LLMRegistry
@@ -126,7 +131,7 @@ reg = LLMRegistry.load("llm_config.json")  # 文件不存在则全 mock
 N.set_registry(reg)                        # 流水线节点据此调用对应 provider
 ```
 
-节点内通过 `ctx`/registry 拿到 `reg.complete("coder", prompt)`，由配置决定打到 Claude 还是 OpenAI。**图结构、checkpointer、HITL 全部不变。** 见 `demo.py` 场景 5（按节点解析 provider/model）。
+节点内通过 `get_registry().complete("节点名", prompt)` 调用，由配置决定打到哪个厂商。**图结构、checkpointer、HITL 全部不变。** 见 `demo.py` 场景 5。
 
 ## 已验证能力
 
@@ -140,3 +145,59 @@ N.set_registry(reg)                        # 流水线节点据此调用对应 p
 - **确定性**：同一 super-step 内的 update 按 batch 顺序合并，保证可复现。
 - **持久化后端**：当前为 SQLite；接口很薄，可替换为 Redis/Postgres。
 - **未实现（留作扩展）**：分布式 worker、子图嵌套、MCP 工具接入、A2A 跨 Agent 委派（见 `docs/agent-flow-research-report.md` 附录 A 与第五章）。
+
+## 快速上手指南
+
+从零到跑通完整流水线，只需三步：
+
+### 1) 准备配置文件
+
+```bash
+cp conf/llm_config.example.json llm_config.json
+```
+
+默认配置使用火山方舟（volcengine）的 `ark-code-latest` 模型。你也可以编辑 `llm_config.json` 自由切换厂商和模型。
+
+### 2) 设置 API Key
+
+```bash
+# 火山方舟
+export VOLCENGINE_API_KEY="your-api-key-here"
+
+# 如果用 Anthropic
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# 如果用 OpenAI
+export OPENAI_API_KEY="sk-..."
+```
+
+API Key 只从环境变量读取，不落磁盘。
+
+### 3) 运行
+
+```bash
+# 跑全部演示场景（无 Key 也能跑，LLM 调用自动降级为 mock）
+python3 demo.py
+
+# 跑核心不变量测试
+PYTHONPATH=. python3 test/test_invariants.py
+```
+
+**无需安装任何依赖**，Python 3.8+ 标准库即可。
+
+### 接入其他 OpenAI 兼容厂商
+
+只需在 `llm_config.json` 的 `providers` 里加一项，设置 `"protocol": "openai"` 即可：
+
+```json
+"providers": {
+  "my-provider": {
+    "base_url": "https://your-api.com/v1/chat/completions",
+    "api_key_env": "MY_API_KEY",
+    "model": "your-model",
+    "protocol": "openai"
+  }
+}
+```
+
+无需改动任何 Python 代码。

@@ -2,10 +2,11 @@
 
 设计目标（对应用户需求）：
 - 接入真实 API 的地方做成**配置文件**（JSON），每个节点可配置自己的 provider/模型/参数；
-- 同时支持 **Claude (Anthropic)** 与 **OpenAI**；
+- 同时支持 **Claude (Anthropic)** 与 **OpenAI** 兼容协议；
+- 通过配置文件顶层的 `providers` 字段声明项目支持哪些厂商，无需改代码；
 - 未配置或配置为 mock 时退化为离线桩，demo 无需任何 key 即可运行。
 
-依赖策略：沿用本项目「零三方依赖」原则，用标准库 urllib 直连两家 HTTP API，
+依赖策略：沿用本项目「零三方依赖」原则，用标准库 urllib 直连 HTTP API，
 不强制安装 anthropic / openai SDK。
 
 安全：API Key 默认从**环境变量**读取（api_key_env 指定变量名），不落配置文件。
@@ -19,19 +20,9 @@ import urllib.request
 from dataclasses import dataclass, fields
 from typing import Any, Dict, Optional
 
-# 各 provider 的默认 endpoint 与默认 key 环境变量名
-_PROVIDER_DEFAULTS = {
-    "anthropic": {
-        "base_url": "https://api.anthropic.com/v1/messages",
-        "api_key_env": "ANTHROPIC_API_KEY",
-        "model": "claude-opus-4-8",
-    },
-    "openai": {
-        "base_url": "https://api.openai.com/v1/chat/completions",
-        "api_key_env": "OPENAI_API_KEY",
-        "model": "gpt-4o",
-    },
-    "mock": {"base_url": "", "api_key_env": "", "model": "mock"},
+# mock 兜底：当 provider 未在配置文件中声明时使用
+_MOCK_PROVIDER: Dict[str, str] = {
+    "base_url": "", "api_key_env": "", "model": "mock", "protocol": "mock",
 }
 
 
@@ -39,7 +30,8 @@ _PROVIDER_DEFAULTS = {
 class NodeLLMConfig:
     """单个节点的 LLM 配置。任一字段缺省时由 registry 用 defaults / provider 默认补全。"""
 
-    provider: str = "mock"               # anthropic | openai | mock
+    provider: str = "mock"               # 配置中声明的 provider 名称
+    protocol: Optional[str] = None       # HTTP 协议: anthropic | openai | mock（由 provider 定义决定）
     model: Optional[str] = None
     system: Optional[str] = None         # system prompt
     temperature: float = 0.7
@@ -48,13 +40,17 @@ class NodeLLMConfig:
     base_url: Optional[str] = None
     timeout: float = 60.0
 
-    def resolved(self) -> "NodeLLMConfig":
-        """用 provider 默认值补全空字段，返回新对象。"""
-        d = _PROVIDER_DEFAULTS.get(self.provider)
+    def resolved(self, providers: Optional[Dict[str, Dict[str, str]]] = None) -> "NodeLLMConfig":
+        """用 provider 默认值补全空字段，返回新对象。providers 优先，mock 兜底。"""
+        d = (providers or {}).get(self.provider)
+        if d is None and self.provider == "mock":
+            d = _MOCK_PROVIDER
         if d is None:
-            raise ValueError(f"未知 provider: {self.provider}（支持 anthropic/openai/mock）")
+            known = set((providers or {}).keys()) | {"mock"}
+            raise ValueError(f"未知 provider: {self.provider}（支持: {', '.join(sorted(known))}）")
         return NodeLLMConfig(
             provider=self.provider,
+            protocol=self.protocol or d.get("protocol", "mock"),
             model=self.model or d["model"],
             system=self.system,
             temperature=self.temperature,
@@ -143,6 +139,13 @@ class LLMRegistry:
 
     配置文件结构（JSON）：
         {
+          "providers": {
+            "volcengine": {
+              "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
+              "api_key_env": "VOLCENGINE_API_KEY",
+              "model": "ark-code-latest"
+            }
+          },
           "defaults": {"provider": "anthropic", "temperature": 0.3},
           "nodes": {
             "planner":  {"provider": "anthropic", "model": "claude-opus-4-8",
@@ -151,19 +154,22 @@ class LLMRegistry:
             "debugger": {"provider": "mock"}
           }
         }
+    `providers` 字段声明项目支持哪些厂商，可覆盖/扩展内置的 anthropic/openai/mock。
     每个节点的最终配置 = provider 默认值 ← defaults ← 该节点 nodes[name]（后者优先）。
     """
 
     def __init__(self, defaults: Optional[Dict[str, Any]] = None,
-                 nodes: Optional[Dict[str, Dict[str, Any]]] = None):
+                 nodes: Optional[Dict[str, Dict[str, Any]]] = None,
+                 providers: Optional[Dict[str, Dict[str, str]]] = None):
         self._defaults = defaults or {}
         self._nodes = nodes or {}
+        self._providers = providers or {}
 
     @classmethod
     def from_file(cls, path: str) -> "LLMRegistry":
         with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
-        return cls(raw.get("defaults", {}), raw.get("nodes", {}))
+        return cls(raw.get("defaults", {}), raw.get("nodes", {}), raw.get("providers", {}))
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "LLMRegistry":
@@ -182,11 +188,11 @@ class LLMRegistry:
         merged = {k: v for k, v in merged.items() if k in valid}
         if not merged:
             merged = {"provider": "mock"}
-        return NodeLLMConfig(**merged).resolved()
+        return NodeLLMConfig(**merged).resolved(self._providers)
 
     def complete(self, node: str, prompt: str, *, system: Optional[str] = None) -> str:
         """对指定节点执行一次补全。system 入参可临时覆盖配置里的 system。"""
         cfg = self.config_for(node)
         if system is not None:
             cfg.system = system
-        return _DISPATCH[cfg.provider](cfg, prompt)
+        return _DISPATCH[cfg.protocol or "mock"](cfg, prompt)

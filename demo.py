@@ -161,13 +161,33 @@ def scenario_timetravel() -> None:
 
 def scenario_config() -> None:
     banner("场景 5 — 每节点 LLM 配置：provider/model 独立解析")
-    # 内联一份配置（等价于 llm_config.json）：planner 走 Claude、coder 走 OpenAI、
-    # debugger 走 Claude Sonnet、reviewer 走 mock。真实运行需设对应环境变量的 key。
+    # 内联一份完整配置：声明 providers + 每节点独立设置。
+    # 所有 provider 定义都在这里，代码中不再硬编码任何厂商。
     reg = LLMRegistry(
-        defaults={"provider": "anthropic", "temperature": 0.3},
+        providers={
+            "anthropic": {
+                "base_url": "https://api.anthropic.com/v1/messages",
+                "api_key_env": "ANTHROPIC_API_KEY",
+                "model": "claude-opus-4-8",
+                "protocol": "anthropic",
+            },
+            "openai": {
+                "base_url": "https://api.openai.com/v1/chat/completions",
+                "api_key_env": "OPENAI_API_KEY",
+                "model": "gpt-4o",
+                "protocol": "openai",
+            },
+            "volcengine": {
+                "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
+                "api_key_env": "VOLCENGINE_API_KEY",
+                "model": "ark-code-latest",
+                "protocol": "openai",
+            },
+        },
+        defaults={"provider": "volcengine", "temperature": 0.3},
         nodes={
             "planner": {"model": "claude-opus-4-8", "system": "需求分析师"},
-            "coder": {"provider": "openai", "model": "gpt-4o"},
+            "coder": {"provider": "volcengine", "model": "ark-code-latest"},
             "debugger": {"model": "claude-sonnet-4-6"},
             "reviewer": {"provider": "mock"},
         },
@@ -176,8 +196,9 @@ def scenario_config() -> None:
     for n in ("planner", "coder", "debugger", "reviewer"):
         c = reg.config_for(n)
         key = c.api_key_env or "-"
-        print(f"    {n:9} provider={c.provider:10} model={c.model:18} key_env={key}")
-    print("\n  说明：set_registry(reg) 即可让流水线节点按此配置调用真实 API；")
+        print(f"    {n:9} provider={c.provider:12} protocol={c.protocol or '-':10} model={c.model:20} key_env={key}")
+    print("\n  说明：所有 provider 定义均来自配置文件，代码中不再硬编码任何厂商。")
+    print("       set_registry(reg) 即可让流水线节点按此配置调用真实 API；")
     print("       未设置 key 的真实 provider 会报清晰错误，mock 始终可离线运行。")
 
 
