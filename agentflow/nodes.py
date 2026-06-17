@@ -42,11 +42,11 @@ def planner(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     tasks = [t.strip() for t in raw.split(",") if t.strip()] or [f"实现：{requirement}"]
     # 内容：交给该节点配置的 LLM 产出一段计划说明
     try:
-        plan = get_registry().complete(
+        plan = ctx.activity("llm_complete", lambda: get_registry().complete(
             "planner",
             f"将以下需求做结构化分解并简述实现计划：\n{requirement}",
             system="你是资深需求分析师，输出简洁的任务计划。",
-        )
+        ))
     except Exception:
         plan = "[LLM 不可用，使用确定性拆分]"
     return {
@@ -65,9 +65,9 @@ def coder(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     if feedback:
         prompt += f"\n上一版测试失败，请修复：{feedback}"
     try:
-        code = get_registry().complete(
+        code = ctx.activity("llm_complete", lambda: get_registry().complete(
             "coder", prompt, system="你是高级工程师，只输出代码。"
-        )
+        ))
     except Exception:
         code = "[LLM 不可用，使用默认实现]"
     return {
@@ -84,11 +84,11 @@ def debugger(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     failures = [] if passed else [f"子任务 {t} 的用例未通过" for t in state["tasks"][:1]]
     # 内容：让 LLM 给一段测试报告（mock 时为确定性文本）
     try:
-        report = get_registry().complete(
+        report = ctx.activity("llm_complete", lambda: get_registry().complete(
             "debugger",
             f"对 v{version} 代码做测试评估，是否通过：{passed}",
             system="你是测试工程师，输出简短测试结论。",
-        )
+        ))
     except Exception:
         report = "[LLM 不可用，使用确定性测试结论]"
     return {
@@ -102,11 +102,11 @@ def debugger(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
 def reviewer(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     """最终评审：人在回路。先让 LLM 给评审意见，再请求人工决定。"""
     try:
-        opinion = get_registry().complete(
+        opinion = ctx.activity("llm_complete", lambda: get_registry().complete(
             "reviewer",
             f"评审 v{state['code_version']} 代码，给出合并建议。",
             system="你是技术评审专家，输出 review 意见。",
-        )
+        ))
     except Exception:
         opinion = "[LLM 不可用，跳过 AI 评审意见]"
     decision = ctx.interrupt({

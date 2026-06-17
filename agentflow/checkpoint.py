@@ -61,6 +61,45 @@ class Checkpointer:
         )
         self._conn.commit()
 
+        # —— activity 缓存：以 (thread_id, node, step, activity_key) 为键缓存 LLM 等调用 —— #
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS activity_results (
+                thread_id    TEXT NOT NULL,
+                node         TEXT NOT NULL,
+                step         INTEGER NOT NULL,
+                activity_key TEXT NOT NULL,
+                result       TEXT NOT NULL,
+                status       TEXT NOT NULL,
+                created_at   REAL NOT NULL,
+                PRIMARY KEY (thread_id, node, step, activity_key)
+            )
+            """
+        )
+        self._conn.commit()
+
+    def put_activity(self, thread_id: str, node: str, step: int,
+                     activity_key: str, result: Any, status: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO activity_results VALUES (?,?,?,?,?,?,?)",
+                (thread_id, node, step, activity_key,
+                 json.dumps(result, ensure_ascii=False),
+                 status, time.time()),
+            )
+            self._conn.commit()
+
+    def get_activity(self, thread_id: str, node: str, step: int,
+                     activity_key: str) -> Optional[tuple[Any, str]]:
+        row = self._conn.execute(
+            "SELECT result, status FROM activity_results "
+            "WHERE thread_id=? AND node=? AND step=? AND activity_key=?",
+            (thread_id, node, step, activity_key),
+        ).fetchone()
+        if row is None:
+            return None
+        return (json.loads(row[0]), row[1])
+
     def put(self, cp: Checkpoint) -> None:
         with self._lock:
             self._conn.execute(
