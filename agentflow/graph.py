@@ -149,6 +149,8 @@ class NodeContext:
         """从 result 自动生成 output_summary。"""
         if isinstance(result, str):
             return result[:100]
+        if isinstance(result, bytes):
+            return f"bytes(len={len(result)})"
         if isinstance(result, dict):
             return f"dict(keys={list(result.keys())})"
         if isinstance(result, list):
@@ -253,6 +255,11 @@ class StateGraph:
         # 1) 入口必须存在
         if not self._entry:
             issues.append(ValidationIssue("error", "缺少入口：未连接 START"))
+        else:
+            for n in self._entry:
+                if n not in self._nodes:
+                    issues.append(ValidationIssue(
+                        "error", f"入口引用了未定义节点: {n}"))
 
         # 2) 条件边函数必须可调用
         for src, router in self._cond.items():
@@ -302,14 +309,13 @@ class StateGraph:
                 queue.append(n)
                 reaches_end.add(n)
         # 反向传播：任何节点能走到 reaches_end 中的节点，自己也算
-        incoming: Dict[str, List[str]] = {n: [] for n in self._nodes}
+        incoming: Dict[str, List[str]] = {}
         for src, outs in self._edges.items():
             for o in outs:
-                if o in incoming:
-                    incoming[o].append(src)
+                incoming.setdefault(o, []).append(src)
         while queue:
             n = queue.popleft()
-            for src in incoming[n]:
+            for src in incoming.get(n, []):
                 if src not in reaches_end:
                     reaches_end.add(src)
                     queue.append(src)
@@ -330,8 +336,8 @@ class StateGraph:
 
         # 7) 条件边返回值静态分析：从源码 AST 中提取字符串字面量
         for src, router in self._cond.items():
-            bad = self._static_string_returns(router)
-            for lit in bad:
+            targets = self._static_string_returns(router)
+            for lit in targets:
                 if lit == END:
                     continue
                 if lit not in self._nodes:
@@ -473,7 +479,7 @@ class StateGraph:
                 label = f"{fn_name} → {{{','.join(hints)}}}"
             else:
                 label = fn_name
-            lines.append(f"    {safe(src)} -.->|{label}| ????")
+            lines.append(f"    {safe(src)} -.->|{label}| (unknown)")
 
         return "\n".join(lines) + "\n"
 

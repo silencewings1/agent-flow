@@ -278,6 +278,12 @@ def test_tool_call_summary():
     assert s["successes"] == 2
     assert s["failures"] == 0
     assert s["total_duration_ms"] >= 0
+
+    # 验证 seq 正确递增
+    records = cp.tool_calls("t_summary")
+    assert len(records) == 2
+    assert records[0]["seq"] == 0, f"第一条 seq 应为 0，实际 {records[0]['seq']}"
+    assert records[1]["seq"] == 1, f"第二条 seq 应为 1，实际 {records[1]['seq']}"
     print(f"✅ test_tool_call_summary 通过 (calls={s['calls']}, total={s['total_duration_ms']}ms)")
 
 

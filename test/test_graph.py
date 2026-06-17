@@ -81,6 +81,24 @@ def test_missing_entry_is_error():
     print("✅ test_missing_entry_is_error")
 
 
+def test_entry_to_undefined_node_is_error():
+    """add_edge(START, 'ghost') 且 'ghost' 未注册时，validate() 应报 error。"""
+    g = StateGraph()
+    g.add_node("a", _noop)
+    g.add_edge(START, "ghost")  # 入口指向未定义节点
+    g.add_edge("ghost", "a")
+    issues = g.validate()
+    errs = [i for i in issues if i.level == "error"]
+    assert any("未定义" in i.message for i in errs), [str(i) for i in errs]
+    # compile() 也应抛 ValueError
+    try:
+        g.compile()
+        assert False, "compile() 应抛 ValueError"
+    except ValueError as e:
+        assert "ghost" in str(e)
+    print("✅ test_entry_to_undefined_node_is_error")
+
+
 # ============================================================
 # 2) 不可达节点
 # ============================================================
@@ -340,6 +358,7 @@ def test_real_pipeline_validates_clean():
 ALL_TESTS = [
     test_valid_graph_no_issues,
     test_missing_entry_is_error,
+    test_entry_to_undefined_node_is_error,
     test_unreachable_node_is_error,
     test_node_reachable_via_conditional_is_not_error,
     test_duplicate_edge_is_warning,

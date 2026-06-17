@@ -227,7 +227,7 @@ class Checkpointer:
             "ROUND(SUM(duration_ms), 2) AS total_duration_ms, "
             "ROUND(AVG(duration_ms), 2) AS avg_duration_ms, "
             "SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS successes, "
-            "SUM(CASE WHEN status='exception' THEN 1 ELSE 0 END) AS failures "
+            "SUM(CASE WHEN status!='success' THEN 1 ELSE 0 END) AS failures "
             "FROM tool_calls WHERE thread_id=? "
             "GROUP BY node ORDER BY node",
             (thread_id,),

@@ -367,3 +367,201 @@ call_count: Counter = Counter()
 **需修复问题 1 后合并。** 问题 1（回环场景缓存导致节点结果不更新）是中等严重程度的问题——demo 因 mock LLM 的确定性输出未暴露此问题，但接入真实 LLM 后会表现为回环中 coder/debugger 每次返回相同结果，导致无法收敛。建议在缓存键中加入 `step` 维度区分同一节点在不同 step 的调用。
 
 问题 2-4 为 minor 级别，可一并修复或记录为技术债。代码整体质量高，API 设计简洁，测试覆盖充分。
+
+---
+
+## P0-2 审查 — 2026-06-17
+
+### 审查范围
+
+`feat/p0-2-tool-calls` 分支（commit `cae8996`），实现工具调用持久化：tool_calls 表 + log_tool_call() + 自动记录。改动涉及 `agentflow/checkpoint.py` (+57 行)、`agentflow/graph.py` (+45 行)、`test/test_activity.py` (+80 行)。
+
+### 测试结果
+
+| 测试套件 | 结果 |
+|---|---|
+| `test/test_activity.py` | **10/10 通过**（原有 7 个 + 新增 3 个：tool_calls_logged、tool_call_summary、not_logged_on_cache_hit） |
+| `test/test_invariants.py` | **2/2 通过，无回归** |
+| `python3 demo.py` | **5/5 场景正常** |
+
+### 发现的问题
+
+#### 问题 1（minor）：`_make_output_summary()` 对 `bytes`、`set` 等类型兜底不充分
+
+**位置**：`agentflow/graph.py:147-160`
+
+```python
+@staticmethod
+def _make_output_summary(result: Any) -> str:
+    if isinstance(result, str):
+        return result[:100]
+    if isinstance(result, dict):
+        return f"dict(keys={list(result.keys())})"
+    if isinstance(result, list):
+        return f"list(len={len(result)})"
+    if isinstance(result, tuple):
+        return f"tuple(len={len(result)})"
+    if result is None:
+        return "None"
+    return str(result)[:100]
+```
+
+`bytes` 类型经过 `str(result)[:100]` 会输出 `b'...'` 格式，对于二进制大对象（如图片 base64）可能长达 100 字符但仍不具可读性。建议在 `str` 检查之后、`dict` 检查之前增加 `bytes` 分支：`return f"bytes(len={len(result)})"`。
+
+`set` 和 `frozenset` 类型会走 `str(result)[:100]`，输出类似 `{1, 2, 3}`，可读性尚可接受，非必须修复。
+
+**影响**：极低。当前场景中 activity 返回的是 LLM 字符串输出，不会出现 `bytes` 类型。属于防御性增强建议。
+
+#### 问题 2（minor）：`input_summary` 参数在 `activity()` 中仅传递，不参与缓存键
+
+**位置**：`agentflow/graph.py:95-96`
+
+`input_summary` 仅作为描述性参数传入 `log_tool_call()`，不参与 activity 缓存键计算。这意味着如果调用方两次以不同的 `input_summary` 调用同一个 `activity(key, fn)`，缓存仍会命中并返回第一次的结果，而 tool_call 记录中的 `input_summary` 是第一次的值。
+
+**影响**：极低。`input_summary` 是调用方可选传入的描述，默认值为 `""`。当前所有节点都不传此参数（`nodes.py` 未改动），所以实际上所有记录的 `input_summary` 都是空字符串。此问题只在将来使用此参数时才有影响。
+
+#### 问题 3（style）：`tool_call_summary()` 中 `failures` 命名与 `status` 值不完全对应
+
+**位置**：`agentflow/checkpoint.py:232-233`
+
+```python
+"SUM(CASE WHEN status='exception' THEN 1 ELSE 0 END) AS failures "
+```
+
+SQL 中的 `status` 值当前仅有 `"success"` 和 `"exception"` 两种。但 SQL 统计 `failures` 时使用了 `CASE WHEN status='exception'` 的硬编码，如果未来扩展 `status` 取值（如 `"timeout"`、`"cancelled"`），这个统计会漏掉新的失败类型。
+
+**影响**：极低。当前只有两种 status 值，逻辑完全正确。建议在将来扩展 status 时同步更新此统计，或者改为 `CASE WHEN status!='success' THEN 1 ELSE 0 END` 更加健壮。
+
+#### 问题 4（edge case）：`test_tool_calls_logged` 断言 `seq == 0` 但未验证 seq 递增
+
+**位置**：`test/test_activity.py:249`
+
+```python
+assert rec["seq"] == 0
+```
+
+单条记录的 seq 恒为 0，这个断言只验证了 seq 从 0 开始，但没有测试用例验证**多次调用时 seq 正确递增**。`test_tool_call_summary` 中的 `multi_call_node` 调用了两次 activity，可以补充验证 seq 分别为 0 和 1。
+
+**影响**：低。seq 分配逻辑（`SELECT COALESCE(MAX(seq), -1) + 1`）与 `log_event` 共用同一模式，后者已在 `test_invariants.py` 中经过充分验证。属于测试覆盖增强建议。
+
+### CR 重点审查点分析
+
+#### 1. tool_calls 表结构 — 合理 ✅
+
+```sql
+CREATE TABLE IF NOT EXISTS tool_calls (
+    thread_id     TEXT NOT NULL,
+    seq           INTEGER NOT NULL,
+    node          TEXT NOT NULL,
+    step          INTEGER NOT NULL,
+    tool_name     TEXT NOT NULL,
+    activity_key  TEXT NOT NULL,
+    input_summary TEXT,
+    output_summary TEXT,
+    duration_ms   REAL NOT NULL,
+    status        TEXT NOT NULL,
+    ts            REAL NOT NULL,
+    PRIMARY KEY (thread_id, seq)
+)
+```
+
+- **seq 分配**：`SELECT COALESCE(MAX(seq), -1) + 1` 从当前 thread 最大 seq 计算下一个，与 `log_event()` 的 seq 分配逻辑一致 ✅
+- **主键设计**：`(thread_id, seq)` 复合主键，seq 按 thread 独立分配，不同 thread 的 seq 互不影响 ✅
+- **索引**：无显式索引。主键自动是 `(thread_id, seq)` 的聚集索引，`WHERE thread_id=?` 的查询都能利用这个索引 ✅
+- **step 字段**：记录了节点执行时的 step 编号，可用于关联 checkpoint 历史 ✅
+
+#### 2. `log_tool_call()` 的 `_lock` 使用 — 正确 ✅
+
+```python
+def log_tool_call(self, thread_id, node, step, ...):
+    with self._lock:
+        seq = self._conn.execute(...)
+        self._conn.execute("INSERT INTO tool_calls VALUES ...")
+        self._conn.commit()
+```
+
+- `_lock` 与 `put_activity()`、`put()`、`log_event()` 共用同一把锁，保证所有写操作串行化 ✅
+- seq 的 `SELECT MAX` + `INSERT` 在锁内完成，不存在并发分配相同 seq 的风险 ✅
+- `commit` 也在锁内，不会出现部分写入 ✅
+
+#### 3. activity() 中缓存命中时不写 tool_calls — 正确 ✅
+
+```python
+cached = self._cp.get_activity(...)
+if cached is not None:
+    result, status = cached
+    if status == "exception":
+        ...
+        raise
+    return result  # ← 直接返回，不写 tool_calls
+t0 = time.time()
+try:
+    result = fn()
+    ...
+    self._cp.log_tool_call(...)  # ← 只有首次执行才写
+```
+
+缓存命中的路径在 `return result` 之前没有调用 `log_tool_call()`，不会产生重复记录 ✅。测试 `test_tool_call_not_logged_on_cache_hit` 已验证：第二次 invoke 后 records 数量仍为 1 ✅。
+
+#### 4. tool_call_summary() 聚合统计 — 正确 ✅
+
+SQL 聚合：
+- `COUNT(*) AS calls` — 总调用次数 ✅
+- `ROUND(SUM(duration_ms), 2)` — 总耗时 ✅
+- `ROUND(AVG(duration_ms), 2)` — 平均耗时 ✅
+- `SUM(CASE WHEN status='success' THEN 1 ELSE 0 END)` — 成功次数 ✅
+- `SUM(CASE WHEN status='exception' THEN 1 ELSE 0 END)` — 失败次数 ✅
+
+边界情况：
+- 无记录时：`GROUP BY node ORDER BY node` 返回空列表 ✅
+- 全失败记录：successes=0, failures=N ✅
+- duration_ms=0（fn 立即返回）：`ROUND(SUM(0), 2)` = 0.0，`ROUND(AVG(0), 2)` = 0.0 ✅
+- 单一节点多次调用：`test_tool_call_summary` 验证了 2 次调用、calls=2、successes=2 ✅
+
+#### 5. `_make_output_summary()` 对各类返回值的处理 — 基本健壮 ✅
+
+覆盖类型：
+- `str`：截取前 100 字符 ✅
+- `dict`：输出 `dict(keys=[...])` ✅
+- `list`：输出 `list(len=N)` ✅
+- `tuple`：输出 `tuple(len=N)` ✅
+- `None`：输出 `"None"` ✅
+- 其他：`str(result)[:100]` 兜底 ✅
+
+异常情况：
+- 空 dict：`list(result.keys())` 返回 `[]`，输出 `dict(keys=[])` ✅
+- 空 list：`list(len=0)` ✅
+- 大字符串：`[:100]` 截断 ✅
+- `str(result)` 抛出异常：理论上 `str()` 对任意 Python 对象都应该成功（至少返回 `<ClassName object at 0x...>`），不会 crash ✅
+
+#### 6. NodeContext.activity() 新增 input_summary 参数 — 正确 ✅
+
+```python
+def activity(self, key: str, fn: Callable[[], Any],
+             input_summary: str = "") -> Any:
+```
+
+- 默认值 `""`：现有代码调用 `ctx.activity(key, fn)` 不传 `input_summary` 也能工作 ✅
+- `input_summary` 只在缓存未命中时传递到 `log_tool_call()`，不影响缓存键 ✅
+- 文档字符串已更新，说明参数用途 ✅
+- `nodes.py` 未做任何改动，完全向后兼容 ✅
+
+### 亮点
+
+- **设计简洁**：在 `activity()` 内部自动记录，对节点完全透明，`nodes.py` 无需改动
+- **seq 分配与 log_event 一致**：复用同一模式（`COALESCE(MAX, -1) + 1`），学习成本低
+- **异常路径记录完整**：fn() 抛出异常时也会写入 tool_call 记录，`status="exception"`，`output_summary` 含异常类型
+- **缓存命中不重复记录**：逻辑正确，测试充分覆盖
+- **`_make_output_summary` 类型覆盖全面**：str/dict/list/tuple/None 都有专门处理，兜底 `str(result)[:100]`
+- **测试覆盖新增逻辑**：3 个新测试覆盖了写入验证、聚合统计、缓存命中不重复
+
+### 最终结论
+
+**审查通过。** 代码质量高，逻辑正确，所有测试通过（10/10 activity 测试 + 2/2 invariant 测试 + 5/5 demo 场景）。发现的 4 个问题均为 minor/边缘级别，不阻塞合并：
+
+- 问题 1：`_make_output_summary` 对 `bytes` 类型可读性差（防御性建议）
+- 问题 2：`input_summary` 不参与缓存键（设计如此，非 bug）
+- 问题 3：`failures` SQL 统计用 `status='exception'` 硬编码（可改为 `!= 'success'` 更健壮）
+- 问题 4：测试未验证 seq 递增（补充建议）
+
+推荐合入 master。
