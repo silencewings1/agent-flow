@@ -248,52 +248,68 @@
 
 ---
 
-## 5. 功能优先级建议
+## 5. 开发计划（按权重）
 
-### P0：先补“可靠性”
+下面的权重按“对当前工程收益 / 风险 / 依赖关系”综合排序，合计 100。
 
-1. **Activity / LLM 调用缓存**
-   - 避免 interrupt / 恢复重复调用
-   - 这是当前最关键的功能缺口
+| 优先级 | 事项 | 权重 | 目标 |
+|---|---|---:|---|
+| P0 | **Activity / LLM 调用缓存** | 25 | 避免 interrupt / 恢复重复调用，先补 durable execution 的硬约束 |
+| P0 | **工具调用持久化** | 10 | 让所有副作用可追踪、可恢复、可审计 |
+| P0 | **图校验增强** | 10 | 提前暴露非法节点、非法路由、错误拓扑 |
+| P1 | **ToolRuntime** | 15 | 补齐文件读写、shell、patch、git diff 等真实研发工具 |
+| P1 | **结构化 Planner** | 10 | 输出 tasks / acceptance criteria / clarifying questions |
+| P1 | **真实 Coder** | 10 | 从“输出文本”升级为“修改文件” |
+| P1 | **真实 Debugger** | 10 | 执行测试命令，收集失败信息，驱动回环修复 |
+| P1 | **Review 分层** | 5 | 将 AI review 与人工审批拆分 |
+| P2 | **动态 Send / worker** | 3 | 支持动态扇出到带独立输入的 worker |
+| P2 | **join / barrier** | 1 | 支撑动态 worker 的显式汇聚 |
+| P2 | **子图** | 1 | 允许节点内部再编排小流程 |
+| P2 | **MCP 工具适配** | 0 | 先预留接口，不作为当前主线交付 |
 
-2. **工具调用持久化**
-   - 先保证副作用可追踪
+### 5.1 开发计划表
 
-3. **图校验增强**
-   - 非法节点、非法路由尽早报错
+| 优先级 | 事项 | 权重 | 说明 |
+|---|---|---:|---|
+| P0 | Activity / LLM 调用缓存 | 25 | 避免 interrupt / 恢复重复调用，先补 durable execution 的硬约束 |
+| P0 | 工具调用持久化 | 10 | 保证副作用可追踪、可恢复、可审计 |
+| P0 | 图校验增强 | 10 | 提前暴露非法节点、非法路由、错误拓扑 |
+| P1 | ToolRuntime | 15 | 补齐文件读写、shell、patch、git diff 等真实研发工具 |
+| P1 | 结构化 Planner | 10 | 输出 tasks / acceptance criteria / clarifying questions |
+| P1 | 真实 Coder | 10 | 从“输出文本”升级为“修改文件” |
+| P1 | 真实 Debugger | 10 | 执行测试命令，收集失败信息，驱动回环修复 |
+| P1 | Review 分层 | 5 | 将 AI review 与人工审批拆分 |
+| P2 | 动态 Send / worker | 3 | 支持动态扇出到带独立输入的 worker |
+| P2 | join / barrier | 1 | 支撑动态 worker 的显式汇聚 |
+| P2 | 子图 | 1 | 允许节点内部再编排小流程 |
+| P2 | MCP 工具适配 | 0 | 先预留接口，不作为当前主线交付 |
 
----
+### 5.2 P0：先补“可靠性”
 
-### P1：再补“真实研发能力”
+| 事项 | 目标 | 关键产物 |
+|---|---|---|
+| Activity / LLM 调用缓存 | 避免中断恢复重复调用 | `ctx.activity(...)`、activity_results 表、相关测试 |
+| 工具调用持久化 | 保证副作用可追踪 | 工具事件日志、可恢复结果 |
+| 图校验增强 | 非法拓扑尽早报错 | `validate()`、路由白名单、Mermaid 导出 |
 
-4. **ToolRuntime**
-   - 文件读写
-   - shell
-   - patch
-   - git diff
+### 5.3 P1：再补“真实研发能力”
 
-5. **结构化 Planner**
-   - 输出 tasks / acceptance criteria / clarifying questions
+| 事项 | 目标 | 关键产物 |
+|---|---|---|
+| ToolRuntime | 接入真实研发工具 | 文件/命令/Git 工具集 |
+| 结构化 Planner | 输出结构化任务 | tasks / acceptance criteria / clarifying questions |
+| 真实 Coder | 修改真实代码 | patch 生成与应用 |
+| 真实 Debugger | 执行真实测试 | 测试命令、失败回传 |
+| Review 分层 | AI + 人工分工 | AI review 报告 + HITL 审批 |
 
-6. **真实 Coder**
-   - 从“输出文本”升级为“修改文件”
+### 5.4 P2：最后补“扩展编排能力”
 
-7. **真实 Debugger**
-   - 执行测试命令
-   - 收集失败信息
-
-8. **Review 分层**
-   - AI review
-   - 人工审批
-
----
-
-### P2：最后补“扩展编排能力”
-
-9. **动态 Send / worker**
-10. **join / barrier**
-11. **子图**
-12. **MCP 工具适配**
+| 事项 | 目标 | 关键产物 |
+|---|---|---|
+| 动态 Send / worker | 动态扇出独立输入节点 | Send API |
+| join / barrier | 动态分支显式汇聚 | join 节点 / barrier 语义 |
+| 子图 | 节点内嵌工作流 | subgraph 支持 |
+| MCP 工具适配 | 预留外部工具协议 | ToolProvider / MCP adapter |
 
 ---
 
@@ -309,4 +325,3 @@
 2. 让 coder/debugger 进入**真实代码仓库**
 3. 让 planner 输出**结构化任务**
 4. 让 workflow 从“演示级”升级为“可交付的研发执行平台”
-
