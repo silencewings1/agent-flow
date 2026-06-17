@@ -92,14 +92,19 @@ class NodeContext:
         from .interrupt import interrupt as _interrupt
         return _interrupt(payload, self.resume_value)
 
-    def tool(self, name: str, fn: Callable[[], Any], **kwargs: Any) -> Any:
+    def tool(self, name: str, fn: Callable[[], Any],
+            key: Optional[str] = None, **kwargs: Any) -> Any:
         """ctx.activity 的薄包装：所有工具调用走这里，自动获得缓存 + 审计。
 
         缓存键自动加 "tool:" 前缀，避免与同节点 LLM activity 冲突。
+        若同节点同 step 对同一工具调多次（参数不同），应传 key="<disambiguator>"
+        让每次调用有独立缓存条目，否则会撞到第一次的缓存结果。
+
         kwargs 里若含 input_summary，会透传给 activity()；其它 kwargs 被忽略。
         """
         input_summary = kwargs.pop("input_summary", "") if kwargs else ""
-        return self.activity(f"tool:{name}", fn, input_summary=input_summary)
+        full_key = f"tool:{name}:{key}" if key else f"tool:{name}"
+        return self.activity(full_key, fn, input_summary=input_summary)
 
     def activity(self, key: str, fn: Callable[[], Any],
                  input_summary: str = "") -> Any:

@@ -313,6 +313,44 @@ def test_cleanup_removes_workdir():
         f.teardown()
 
 
+# —— 14) key= 参数：同工具多次调用不撞缓存（P1-3 真实 Coder 用例）—— #
+
+def test_tool_key_disambiguates_multiple_calls():
+    """在同 node + step 内对同一工具调多次，每次传 key= 应独立缓存。
+
+    这是 P1-3 真实 Coder 的硬性要求：每个 task 写一个文件，不能撞缓存。
+    """
+    f = _ToolFixture()
+    f.setup()
+    try:
+        # 准备两个文件
+        path_a = os.path.join(f.rt.workdir, "a.txt")
+        path_b = os.path.join(f.rt.workdir, "b.txt")
+        f.rt.write_file("a.txt", "content A")
+        f.rt.write_file("b.txt", "content B")
+
+        # 构造一个图，节点内对 read_file 调两次，key= 不同
+        g = StateGraph(StateSchema())
+        def reader(state, ctx):
+            # 两次 read_file 调同一工具名 path 不同，需要独立缓存
+            # 不传 key= 时第二次会撞第一次的缓存（这里我们验证有 key= 时不撞）
+            content_a = ctx.tool("read_file", key="a", fn=lambda: f.rt.read_file("a.txt"))
+            content_b = ctx.tool("read_file", key="b", fn=lambda: f.rt.read_file("b.txt"))
+            return {"a": content_a, "b": content_b, "log": []}
+        g.add_node("reader", reader)
+        g.add_edge(START, "reader")
+        g.add_edge("reader", END)
+        app = g.compile(Checkpointer())
+
+        r = app.invoke({}, thread_id="key_test")
+        assert r.status == "completed"
+        assert r.state["a"] == "content A", f"a 应是 content A，实际 {r.state['a']!r}"
+        assert r.state["b"] == "content B", f"b 应是 content B，实际 {r.state['b']!r}"
+        print("✅ test_tool_key_disambiguates_multiple_calls 通过")
+    finally:
+        f.teardown()
+
+
 # —— 13) git_diff 在非 git 仓库中返回 "" —— #
 
 def test_git_diff_in_non_git_repo():
@@ -346,6 +384,7 @@ def main() -> int:
         test_run_cmd_timeout,
         test_tool_caching,
         test_cleanup_removes_workdir,
+        test_tool_key_disambiguates_multiple_calls,
         test_git_diff_in_non_git_repo,
     ]
     failed = 0
