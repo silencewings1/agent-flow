@@ -112,6 +112,9 @@ def coder(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     version = state.get("code_version", 0) + 1
     plan_dict = state.get("plan", {})
     plan_tasks = plan_dict.get("tasks", []) if isinstance(plan_dict, dict) else []
+    # 显式处理 None（当 key 存在但值为 None 时不依赖 falsy 巧合）
+    if plan_tasks is None:
+        plan_tasks = []
 
     # 兼容旧场景（无 plan.tasks）：从 state["tasks"] 取 id 列表
     legacy_tasks = state.get("tasks", [])
@@ -129,8 +132,11 @@ def coder(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     workdir = state.get("workdir", tempfile.mkdtemp(prefix="af-coder-"))
 
     artifacts = []
-    for task in plan_tasks:
-        task_id = task.get("id", "unknown")
+    for i, task in enumerate(plan_tasks):
+        task_id = task.get("id") or f"t{i+1}"
+        if not task.get("id"):
+            import warnings
+            warnings.warn(f"[Coder] task #{i+1} 缺 id，自动分配为 '{task_id}'")
         task_title = task.get("title", "")
         task_details = task.get("details", task_title)
 
@@ -204,7 +210,7 @@ def debugger(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
 
     # 无 workdir：fallback 到旧行为（兼容 scenario 1-5）
     if not workdir or not artifacts:
-        passed = version >= state.get("pass_at_version", 3)
+        passed = version >= (state.get("pass_at_version") or 3)
         failures = [] if passed else [f"子任务 {t} 的用例未通过" for t in state["tasks"][:1]]
         try:
             report = ctx.activity("llm_complete", lambda: get_registry().complete(
@@ -257,7 +263,7 @@ def debugger(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
 
     if not _pytest_available:
         # 无 pytest → fallback 到旧 pass_at_version 行为
-        passed = version >= state.get("pass_at_version", 3)
+        passed = version >= (state.get("pass_at_version") or 3)
         failures = [] if passed else [
             {"test_name": "pytest_unavailable",
              "error_msg": "pytest 不可用，使用 pass_at_version 判定"}

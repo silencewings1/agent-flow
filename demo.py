@@ -273,9 +273,20 @@ def scenario_real_debugger() -> None:
     g.add_node("debugger", debugger)
     g.add_edge(START, "debugger")
     g.add_conditional_edges("debugger", route_after_debug)
-    # 加一个 dummy coder（不改文件，只递增版本）
+    # 加一个 dummy coder（修复测试文件，实现真正的 fix-and-retest 回环）
     def dummy_coder(state, ctx):
         v = state.get("code_version", 0) + 1
+        import os as _os_demo
+        workdir = state.get("workdir", "")
+        if workdir:
+            # 修复测试文件：把 assert fib(5) == 99 改成 assert fib(5) == 5
+            test_file = _os_demo.path.join(workdir, "src", "test_fib.py")
+            if _os_demo.path.isfile(test_file):
+                with open(test_file, "r") as f:
+                    content = f.read()
+                content = content.replace("assert fib(5) == 99", "assert fib(5) == 5")
+                with open(test_file, "w") as f:
+                    f.write(content)
         return {"code_version": v, "log": [f"[Coder] 修复 v{v}"]}
     g.add_node("coder", dummy_coder)
     g.add_edge("coder", "debugger")  # 回环：coder 修完后 debugger 再测

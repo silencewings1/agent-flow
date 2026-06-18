@@ -169,6 +169,11 @@ class ToolRuntime:
             raise ValueError(
                 f"apply_patch 需要非空 unified_diff（path={repr(path)}）"
             )
+        # CR 2026-06-17 3.6: 限制 diff 大小，避免 OOM
+        if len(unified_diff) > 1_000_000:
+            raise ValueError(
+                f"apply_patch diff 超过 1MB 限制（{len(unified_diff)} 字节）"
+            )
         full = _resolve_within_workdir(self.workdir, path)
         # patch 需要文件存在（即使是空文件）；不存在则建空文件
         if not os.path.exists(full):

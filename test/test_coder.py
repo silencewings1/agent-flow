@@ -225,6 +225,9 @@ def test_coder_with_feedback():
         assert res.status == "completed", res.status
         # coder 不应抛异常
         assert res.state["code_version"] == 1
+        # 验证 prompt 中确实包含了 test_failures 的 feedback 内容
+        assert "NullPointerException" in reg._last_prompt, \
+            f"feedback 未注入 prompt: {reg._last_prompt[:200]}"
     print("test_coder_with_feedback 通过")
 
 
