@@ -5,11 +5,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-python3 demo.py                                    # Run all 5 demo scenarios
-PYTHONPATH=. python3 test/test_invariants.py       # Run invariant tests
+# 默认使用 Python 3.7 环境（dev_py37 兼容性要求）
+source /Users/ospacer/.py37/bin/activate
+
+python demo.py                                      # Run all 7 demo scenarios
+PYTHONPATH=. python test/test_invariants.py          # Run invariant tests
+PYTHONPATH=. python -m pytest test/ -v              # Run all test suites
+./scripts/verify_py37.sh                            # 3.7 兼容性全量验证（需 3.7 环境）
 ```
 
-No dependencies beyond Python 3.8+ standard library.
+No dependencies beyond Python 3.7+ standard library.
 
 ## Architecture
 
@@ -45,14 +50,21 @@ Add an entry to `llm_config.json` under `providers` with `protocol: "openai"` (f
 | 窗口 2 | **开发** | 按需求文档写代码、修 bug、跑 demo | 代码变更 + git commit |
 | 窗口 3 | **代码审查及测试** | review diff、运行测试、记录问题 | `docs/review-notes.md` |
 
-### 协作流程
+### 协作流程（关键：CR 不可跳过）
 
 ```
 窗口 1(PM)：需求分析 → 产出 docs/plan.md + 写入 Memory
 窗口 2(Dev)：读取 docs/plan.md → 写代码实现 → git commit
 窗口 3(CR)：  git diff 看改动 → 跑测试 → 产出 docs/review-notes.md
 窗口 2(Dev)：读取 review-notes.md → 修 bug → 再次 commit
+窗口 1(PM)：CR 确认通过 → git merge → 删除 feature 分支
 ```
+
+**⚠️ PM 合并必须在 CR 通过之后，绝对不可跳过 CR 步骤。**
+
+此规则来自三次教训：Wave 1（PM 跳过 CR 直接合并，事后 CR 发现 4 个 P0）、Wave 2（同样跳过，事后发现 3 个 P0）、Round 1（跳过，事后发现 2 个 P1）。每次事后补救都能发现问题，证明独立 CR 不是形式主义。
+
+PM 在子 agent 中担任的角色：打开多个 agent，分别承担 Dev、CR 等角色，PM 负责规划、验收和合并。流程必须严格 Dev → CR → PM 串行。
 
 ### 窗口间通信方式
 
