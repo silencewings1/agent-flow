@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import warnings
 from typing import Any, Dict, List, Optional
 
 from .graph import NodeContext
@@ -87,9 +88,18 @@ def planner(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     if not plan.summary or not plan.summary.strip():
         plan.summary = f"实现 {requirement}"
     # 兜底：保证每个 task 至少有 id+title 两个字段
-    for i, t in enumerate(plan.tasks):
+    existing_ids = {t.get("id") for t in plan.tasks if t.get("id")}
+    counter = 0
+    for t in plan.tasks:
         if "id" not in t:
-            t["id"] = f"t{i+1}"
+            # 自动分配一个不与已有 id 冲突的 id
+            while True:
+                counter += 1
+                candidate = f"t{counter}"
+                if candidate not in existing_ids:
+                    break
+            t["id"] = candidate
+            existing_ids.add(candidate)
         if "title" not in t:
             t["title"] = requirement
         if "details" not in t:
@@ -145,7 +155,6 @@ def coder(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
                 candidate = f"t{i+1}"
             task_id = candidate
             existing_ids.add(task_id)
-            import warnings
             warnings.warn(f"[Coder] task #{i+1} 缺 id，自动分配为 '{task_id}'")
         task_title = task.get("title", "")
         task_details = task.get("details", task_title)

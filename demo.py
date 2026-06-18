@@ -272,7 +272,10 @@ def scenario_real_debugger() -> None:
     g = StateGraph(schema, max_steps=10)
     g.add_node("debugger", debugger)
     g.add_edge(START, "debugger")
-    g.add_conditional_edges("debugger", route_after_debug)
+    # 本地图没有 ai_review 节点：测试通过直接结束，不沿用全局 route_after_debug
+    def route_after_debug_to_end(state):
+        return END if state.get("tests_passed") else "coder"
+    g.add_conditional_edges("debugger", route_after_debug_to_end)
     # 加一个 dummy coder（修复测试文件，实现真正的 fix-and-retest 回环）
     def dummy_coder(state, ctx):
         v = state.get("code_version", 0) + 1
