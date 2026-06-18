@@ -165,7 +165,7 @@ def test_planner_node_returns_structured_state():
     assert "summary" in plan and "tasks" in plan
     assert "acceptance_criteria" in plan and "clarifying_questions" in plan
     assert isinstance(tasks, list)
-    assert all(isinstance(t, str) for t in tasks), f"tasks 应为 id 列表，得到 {tasks!r}"
+    assert all(isinstance(t, str) for t in tasks), f"tasks 应为 id 列表，得到 {repr(tasks)}"
     # 与 plan.tasks 的 id 一一对应
     assert tasks == [t["id"] for t in plan["tasks"]]
     print("✅ test_planner_node_returns_structured_state 通过:", tasks)

@@ -283,7 +283,7 @@ class StateGraph:
         for src, router in self._cond.items():
             if not callable(router):
                 issues.append(ValidationIssue(
-                    "error", f"条件边函数不可调用: {router!r}", node=src))
+                    "error", f"条件边函数不可调用: {repr(router)}", node=src))
 
         # 3) 静态边不能引用未定义节点
         for src, outs in self._edges.items():
@@ -360,7 +360,7 @@ class StateGraph:
                     continue
                 if lit not in self._nodes:
                     issues.append(ValidationIssue(
-                        "warning", f"条件边可能返回未定义节点 {lit!r}", node=src))
+                        "warning", f"条件边可能返回未定义节点 {repr(lit)}", node=src))
 
         # 8) 循环检测：仅看静态边，不阻止编译（循环是合法功能）
         if self._has_cycle():
