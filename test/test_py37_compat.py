@@ -152,10 +152,12 @@ def test_no_py38_fstring_conversion() -> None:
 def test_no_py38_walrus() -> None:
     """扫描 walrus operator := —— 3.8+ 才支持。
 
-    简化：直接 ast 解析，碰 SyntaxError 报错。但 walrus 在 3.14 下也合法，
-    所以这个测试只在自己控制代码的语法子集上有意义。我们的代码不用 :=。
+    在 3.7 下 `ast.NamedExpr` 不存在，所以此测试变为空操作（3.7 本身无法
+    解析 walrus 语法，如果真有 walrus 会在 ast.parse 时 SyntaxError）。
     """
-    # 简单文本扫描：查找可疑的 := 模式（排除 := 在字符串里和注释里）
+    if not hasattr(ast, "NamedExpr"):
+        # 3.7 无此节点类型 — 如果有 walrus，ast.parse 会抛 SyntaxError
+        return
     for path in _walk_py_files():
         with open(path, "r", encoding="utf-8") as fp:
             src = fp.read()
@@ -163,7 +165,6 @@ def test_no_py38_walrus() -> None:
             tree = ast.parse(src, filename=path)
         except SyntaxError as e:
             raise AssertionError(f"{path} 语法错误: {e}")
-        # 查找 NamedExpr 节点
         for node in ast.walk(tree):
             if isinstance(node, ast.NamedExpr):
                 raise AssertionError(
@@ -192,7 +193,15 @@ def test_no_py39_pep585() -> None:
 
 
 def test_no_py310_match_case() -> None:
-    """扫描 match/case 语法 —— 3.10+ 才支持。"""
+    """扫描 match/case 语法 —— 3.10+ 才支持。
+
+    在 3.7-3.9 下 `ast.Match` 不存在，如果有 match/case 会在 ast.parse 时
+    SyntaxError（因为 match 在 3.7 下不是关键字，但 case 也不是，所以实际上
+    不会 parse 失败——`match = 1` 是合法的。此测试在高版本下用 AST 检查）。
+    """
+    if not hasattr(ast, "Match"):
+        # 3.7-3.9 无此节点类型，match/case 语法本身在 3.7 下不合法
+        return
     for path in _walk_py_files():
         with open(path, "r", encoding="utf-8") as fp:
             src = fp.read()
