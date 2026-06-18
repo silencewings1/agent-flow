@@ -16,6 +16,9 @@
 | 人在回路（interrupt） | [interrupt.py](agentflow/interrupt.py) `ctx.interrupt(payload)` → 暂停存盘；`Command(resume=...)` 注入恢复 |
 | 错误恢复与重试 | `add_node(..., retries=N)` 节点级重试 |
 | 时间旅行 | `Checkpointer.history()` / `.events()` |
+| **Activity 缓存（P0-1）** | `ctx.activity(key, fn)` — 以 `(thread_id, node, step, key)` 为键，中断恢复不重跑 LLM |
+| **工具调用持久化（P0-2）** | `Checkpointer.tool_calls()` / `.tool_call_summary()` — 自动记录每次 activity 执行 |
+| **图校验 + Mermaid（P0-3）** | `StateGraph.validate()` + `.to_mermaid()` — 编译前静态校验 + 可视化导出 |
 
 ## 目录结构
 
@@ -23,8 +26,8 @@
 agentflow/
   state.py       # 共享 state + reducer 合并（overwrite / append）
   interrupt.py   # Interrupt 异常 + Command + interrupt() 原语
-  checkpoint.py  # 事件溯源式 SQLite checkpointer
-  graph.py       # StateGraph 定义 + CompiledGraph 超步执行器
+  checkpoint.py  # 事件溯源式 SQLite checkpointer（含 activity 缓存 + tool_calls 表）
+  graph.py       # StateGraph 定义（含 validate + to_mermaid）+ CompiledGraph 超步执行器
   llm.py         # 每节点 LLM 配置层（mock / Anthropic / OpenAI）
   nodes.py       # AgentMesh 四节点（LLM 可配置）+ 条件路由函数
 conf/
@@ -34,6 +37,8 @@ docs/
   agent-flow-analysis-report.md  # 功能分析报告
 test/
   test_invariants.py # 核心不变量测试（不重跑 / 回环终止）
+  test_activity.py   # Activity 缓存 + 工具调用持久化 测试
+  test_graph.py      # 图校验 + Mermaid 导出 测试
 demo.py              # 5 个可运行场景
 ```
 
@@ -42,6 +47,8 @@ demo.py              # 5 个可运行场景
 ```bash
 python3 demo.py                 # 跑 5 个演示场景
 PYTHONPATH=. python3 test/test_invariants.py  # 跑核心不变量测试
+PYTHONPATH=. python3 test/test_activity.py    # 跑 activity 缓存 + 工具调用测试
+PYTHONPATH=. python3 test/test_graph.py       # 跑图校验 + Mermaid 导出测试
 ```
 
 无需安装任何依赖（Python 3.8+ 标准库即可）。
@@ -82,6 +89,66 @@ g.add_conditional_edges("review", lambda s: END if s["approved"] else "planner")
 app = g.compile(Checkpointer("wf.db"))                     # 传文件路径=跨进程持久化
 r = app.invoke({"requirement": "..."}, thread_id="job-1")  # → interrupted
 r = app.invoke({}, thread_id="job-1", command=Command(resume={"approve": True}))  # → completed
+```
+
+## P0 新增能力（可靠性增强）
+
+### Activity 缓存（P0-1）—— 中断恢复不重跑 LLM
+
+节点内任何 LLM 调用或耗时操作，只需包一层 `ctx.activity(key, fn)`，中断恢复后直接返回缓存结果，不重复执行：
+
+```python
+def planner(state, ctx):
+    # 首次执行：调用 LLM → 写入 activity_results 表 → 返回结果
+    # 中断恢复：从 activity_results 读取 → 直接返回缓存
+    plan = ctx.activity("llm_complete", lambda: get_registry().complete("planner", prompt))
+    return {"plan": plan}
+```
+
+- **缓存键**：`(thread_id, node, step, activity_key)` — 同一节点多次调用用不同 key 区分
+- **异常缓存**：`fn()` 抛异常也会被记录，重入时**重抛**（避免反复重试同一个会失败的调用）
+- **无 checkpointer 时**：退化为直接调用 `fn()`
+
+### 工具调用持久化（P0-2）—— 自动审计层
+
+每次 `ctx.activity()` 执行时**自动写入** `tool_calls` 表（缓存命中时不写），无需节点代码改动：
+
+```python
+# 跑完工作流后，查询所有工具调用记录
+records = checkpointer.tool_calls(thread_id)
+# 返回示例：
+# [{"seq": 0, "node": "planner", "tool_name": "llm_complete",
+#   "duration_ms": 123.45, "status": "success", ...}, ...]
+
+# 按节点聚合统计
+summary = checkpointer.tool_call_summary(thread_id)
+# 返回示例：
+# [{"node": "planner", "calls": 1, "total_duration_ms": 1234.56,
+#   "avg_duration_ms": 1234.56, "successes": 1, "failures": 0}, ...]
+```
+
+每条记录含：`thread_id/seq/node/step/tool_name/activity_key/input_summary/output_summary/duration_ms/status/ts`。
+
+### 图校验 + Mermaid 导出（P0-3）—— 编译前静态检查
+
+运行前调用 `validate()` 做拓扑检查，及早发现非法结构：
+
+```python
+issues = g.validate()
+# 返回 ValidationIssue 列表，每个 issue 有 level:
+#   error   → 必须修复（如不可达节点、引用未定义节点）
+#   warning → 可疑但合法（如死胡同、条件边可能返回未定义节点）
+#   info    → 仅提示（如检测到循环）
+
+# 导出 Mermaid 可视化
+print(g.to_mermaid())
+# graph TD
+#     __start__([__start__]):::startNode
+#     planner["planner"]
+#     coder["coder"]
+#     __end__([__end__]):::endNode
+#     __start__ --> planner
+#     planner --> coder
 ```
 
 ## 接入真实 LLM：每节点独立配置
@@ -135,9 +202,28 @@ N.set_registry(reg)                        # 流水线节点据此调用对应 p
 
 ## 已验证能力
 
-`test/test_invariants.py` 断言：
+`test/test_invariants.py` 断言核心不变量：
 - **不重跑**：中断恢复后，中断点之前的节点调用次数不增加（`a=1, b=1` 保持不变）；
 - **回环终止**：纯回环图被 `max_steps` 兜底为 `failed`，不会无限跑。
+
+`test/test_activity.py` 验证 Activity 缓存 + 工具调用：
+- **首次调用执行 fn**，结果正确
+- **中断恢复缓存命中**，fn 不再执行
+- **不同 key 独立缓存**，不同 thread 互不干扰
+- **异常被缓存并重抛**，保留原始异常类型
+- **复杂类型（dict/list）序列化/反序列化**正确
+- **首次调用自动写入 tool_calls**，缓存命中不新增
+- **tool_call_summary 按 node 聚合统计**正确
+
+`test/test_graph.py` 验证图校验 + Mermaid：
+- **合法图 validate() 无 error**
+- **不可达节点 → error**
+- **重复边 → warning**
+- **循环 → info**（不阻止编译，合法功能）
+- **条件边返回未定义节点 → warning**
+- **嵌套函数 return 值不误提取**（AST 静态分析优化）
+- **BFS 用 deque 而非 list.pop(0)**
+- **to_mermaid() 输出包含所有节点和边**
 
 ## 边界与可扩展点
 
@@ -179,8 +265,10 @@ API Key 只从环境变量读取，不落磁盘。
 # 跑全部演示场景（无 Key 也能跑，LLM 调用自动降级为 mock）
 python3 demo.py
 
-# 跑核心不变量测试
-PYTHONPATH=. python3 test/test_invariants.py
+# 跑所有测试
+PYTHONPATH=. python3 test/test_invariants.py   # 核心不变量
+PYTHONPATH=. python3 test/test_activity.py     # Activity 缓存 + 工具调用
+PYTHONPATH=. python3 test/test_graph.py        # 图校验 + Mermaid
 ```
 
 **无需安装任何依赖**，Python 3.8+ 标准库即可。
