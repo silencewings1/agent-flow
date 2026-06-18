@@ -175,10 +175,17 @@ def test_no_py38_walrus() -> None:
 def test_no_py39_pep585() -> None:
     """用 AST 检测 PEP 585 内建泛型订阅 list[int] —— 3.9+ 才支持。
 
-    CR 2026-06-18 2.2: 用 AST 祖先链代替脆弱的行内字符位置启发式。
-    关键简化：有 `from __future__ import annotations` 的文件中，注解位置的
-    list[int] 等已被字符串化（AST 中是 Constant 而非 Subscript），所以
-    出现的 Subscript 节点都是运行时用法，全部应报。
+    CR 2026-06-18 2.2（Round 3 修正）: 原实现误以为 `from __future__ import
+    annotations` 会让注解在 AST 中变成 Constant 字符串，于是对带 future
+    import 的文件"全量报告 Subscript"。但 PEP 563 的字符串化发生在运行时
+    求值阶段（typing.get_type_hints），ast.parse 阶段注解仍是 Subscript
+    节点。这导致任何 future+list[int] 注解的文件被误报。
+
+    正确做法：无论是否有 future import，统一用 parent_map 判断 Subscript
+    是否在注解位置（AnnAssign.annotation / arg.annotation / FunctionDef.
+    returns）。注解位置的 list[int] 在 3.7 下不会被求值（有 future 保护），
+    是安全的；只有运行时上下文（isinstance(x, list[int])、cast(...) 等）
+    才是真正的违规。
     """
     _PEP585_NAMES = frozenset({"list", "dict", "set", "frozenset", "type"})
     for path in _walk_py_files():
@@ -188,41 +195,58 @@ def test_no_py39_pep585() -> None:
             tree = ast.parse(src, filename=path)
         except SyntaxError as e:
             raise AssertionError(f"{path} 语法错误: {e}")
-        # 有 from __future__ import annotations → 注解位置已字符串化，
-        # Subscript 只出现在运行时上下文 → 全部需要报告
-        has_future_annotations = any(
-            isinstance(node, ast.ImportFrom)
-            and node.module == "__future__"
-            and any(alias.name == "annotations" for alias in node.names)
-            for node in ast.walk(tree)
-        )
-        if has_future_annotations:
-            # 注解已字符串化，出现的 Subscript 都是运行时用法
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Subscript):
-                    if isinstance(node.value, ast.Name) and node.value.id in _PEP585_NAMES:
-                        raise AssertionError(
-                            f"{path}:{node.lineno} 含 PEP 585 内建泛型 "
-                            f"{node.value.id}[...] (3.9+)"
-                        )
-        else:
-            # 无 future annotations → 需要区分注解上下文和运行时上下文
-            # 构建 parent 映射判断 Subscript 是否在注解位置
-            parent_map: dict = {}
-            for parent in ast.walk(tree):
-                for child in ast.iter_child_nodes(parent):
-                    parent_map[child] = parent
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Subscript):
-                    if isinstance(node.value, ast.Name) and node.value.id in _PEP585_NAMES:
-                        # 检查是否在注解上下文中
-                        parent = parent_map.get(node)
-                        if isinstance(parent, (ast.AnnAssign, ast.arg)):
-                            continue  # 注解上下文，安全
-                        raise AssertionError(
-                            f"{path}:{node.lineno} 含 PEP 585 内建泛型 "
-                            f"{node.value.id}[...] (3.9+)"
-                        )
+        # 构建 parent 映射，用于判断 Subscript 是否在注解上下文
+        parent_map: dict = {}
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                parent_map[child] = parent
+
+        def _is_annotation_context(node: ast.Subscript) -> bool:
+            """判断 Subscript 是否用作类型注解（运行时不会被求值）。
+
+            沿父链上溯：类型表达式中间可能出现的合法节点（Subscript / Tuple /
+            BinOp(BitOr) / Attribute / Constant(None)）继续往上找，直到命中
+            注解节点或其它上下文为止。这覆盖嵌套场景，如
+            Dict[str, list[int]] 里 list[int] 的父链是 Tuple → Subscript(Dict)
+            → AnnAssign。
+            """
+            cur = node
+            while cur in parent_map:
+                parent = parent_map[cur]
+                # 变量注解: y: list[int] = []
+                if isinstance(parent, ast.AnnAssign) and parent.annotation is cur:
+                    return True
+                # 函数参数注解: def f(x: list[int])
+                if isinstance(parent, ast.arg) and parent.annotation is cur:
+                    return True
+                # 返回类型注解: def f() -> list[int]
+                if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)) and parent.returns is cur:
+                    return True
+                # 类型表达式中间节点：继续上溯
+                if isinstance(parent, ast.Subscript):
+                    cur = parent
+                    continue
+                if isinstance(parent, ast.Tuple):  # Dict[k, v] 的 slice
+                    cur = parent
+                    continue
+                if isinstance(parent, ast.BinOp) and isinstance(parent.op, ast.BitOr):
+                    cur = parent
+                    continue
+                if isinstance(parent, ast.Attribute):
+                    cur = parent
+                    continue
+                return False
+            return False
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Subscript):
+                if isinstance(node.value, ast.Name) and node.value.id in _PEP585_NAMES:
+                    if _is_annotation_context(node):
+                        continue  # 注解位置，3.7 下不求值，安全
+                    raise AssertionError(
+                        f"{path}:{node.lineno} 含 PEP 585 内建泛型 "
+                        f"{node.value.id}[...] (3.9+)"
+                    )
 
 
 def test_no_py310_match_case() -> None:
@@ -250,37 +274,95 @@ def test_no_py310_match_case() -> None:
 
 
 def test_no_py310_union_pipe() -> None:
-    """检测 PEP 604 X | Y 联合类型 —— 3.10+ 才支持。
+    """用 AST 检测 PEP 604 X | Y 联合类型 —— 3.10+ 才支持。
 
-    改进的正则：允许小写类型名（int | str, int | None 等），覆盖了旧正则
-    漏检的最常见 PEP 604 写法。同时用行级上下文过滤（必须含 ':' 或 '->'），
-    避免误报普通代码中的 | 操作（如 set union）。
+    CR 2026-06-18 2.1（Round 3 修正）: 原实现用正则匹配含 ':' 或 '->' 的行，
+    漏检运行时类型别名 `MyType = int | str`（无 ':'/'->' 前缀，但 3.7 运行
+    时会 TypeError）。正则方案的根本缺陷：无法区分注解 union 与位运算。
+
+    改用 AST：找到所有 `BinOp(op=BitOr)` 且两侧都是 type-like 的 union，
+    再判断它是否出现在「该报告」的上下文：
+      1. 类型注解（AnnAssign.annotation / arg.annotation / FunctionDef.returns）
+         —— 在 3.7 下若有 from __future__ import annotations 则不求值、安全；
+         但若无 future 保护则运行时求值会炸，统一报告（保守）。
+      2. 类型别名赋值（`PascalName = Type | Type`）—— 运行时求值，3.7 必炸。
+    不报告普通位运算（flags | bits、set | set），靠左侧是否 PascalCase
+    类型名 + 右侧是否 type-like 双重过滤。
     """
-    import re
-    # 匹配注解上下文中的 |：函数参数、返回值、变量注解
-    # 两条正则互补：一条匹配 "name: Type | Type"（参数/变量注解），
-    # 一条匹配 "-> Type | Type"（返回类型注解）。
-    # CR 2026-06-18 2.1: 原正则只匹配 : 前缀，漏检 -> 返回类型
-    pat_colon = re.compile(r":\s*[\w\[\],. ]+\s*\|\s*[\w\[\],. ]+")
-    pat_arrow = re.compile(r"->\s*[\w\[\],. ]+\s*\|\s*[\w\[\],. ]+")
+    _BUILTIN_TYPES = frozenset({
+        "int", "str", "float", "bool", "bytes", "complex",
+        "list", "dict", "set", "tuple", "frozenset", "type",
+    })
+
+    def _is_type_like(node: ast.AST) -> bool:
+        if isinstance(node, ast.Name):
+            return (
+                node.id in _BUILTIN_TYPES
+                or node.id == "None"
+                or node.id[0].isupper()  # PascalCase / SCREAMING_SNAKE 约定
+            )
+        if isinstance(node, ast.Constant) and node.value is None:
+            return True
+        if isinstance(node, ast.Attribute):  # typing.Optional, mod.Type
+            return True
+        if isinstance(node, ast.Subscript):
+            return _is_type_like(node.value)
+        return False
+
+    def _is_union_binop(node: ast.AST) -> bool:
+        if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.BitOr):
+            return False
+        left_ok = _is_type_like(node.left) or _is_union_binop(node.left)
+        right_ok = _is_type_like(node.right) or _is_union_binop(node.right)
+        return left_ok and right_ok
+
+    def _is_type_alias_target(name: str) -> bool:
+        # PascalCase 类型名：首字母大写且不全大写（排除 SCREAMING_SNAKE_CASE 常量）
+        return name[0].isupper() and not name.isupper()
+
     for path in _walk_py_files():
         with open(path, "r", encoding="utf-8") as fp:
-            for i, line in enumerate(fp, 1):
-                stripped = line.lstrip()
-                if stripped.startswith("#"):
-                    continue
-                # 跳过内联注释
-                if "#" in line:
-                    code_part = line.split("#", 1)[0]
-                else:
-                    code_part = line
-                # 必须含 : 或 -> 才可能是类型注解
-                if ":" not in code_part and "->" not in code_part:
-                    continue
-                if pat_colon.search(code_part) or pat_arrow.search(code_part):
-                    raise AssertionError(
-                        f"{path}:{i} 可能含 PEP 604 X | Y 联合类型 (3.10+): {line.rstrip()}"
-                    )
+            src = fp.read()
+        try:
+            tree = ast.parse(src, filename=path)
+        except SyntaxError as e:
+            raise AssertionError(f"{path} 语法错误: {e}")
+        parent_map: dict = {}
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                parent_map[child] = parent
+        for node in ast.walk(tree):
+            if not _is_union_binop(node):
+                continue
+            # 沿父链判断是否在「该报告」的上下文
+            cur = node
+            reported = False
+            while cur in parent_map:
+                parent = parent_map[cur]
+                # 类型注解上下文
+                if isinstance(parent, ast.AnnAssign) and parent.annotation is cur:
+                    reported = True
+                    break
+                if isinstance(parent, ast.arg) and parent.annotation is cur:
+                    reported = True
+                    break
+                if (isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and parent.returns is cur):
+                    reported = True
+                    break
+                # 类型别名赋值: PascalName = (Type | Type)
+                if isinstance(parent, ast.Assign):
+                    if (len(parent.targets) == 1
+                            and isinstance(parent.targets[0], ast.Name)
+                            and parent.value is cur
+                            and _is_type_alias_target(parent.targets[0].id)):
+                        reported = True
+                    break  # 其它赋值（位运算等）不报，停止上溯
+                cur = parent
+            if reported:
+                raise AssertionError(
+                    f"{path}:{node.lineno} 含 PEP 604 X | Y 联合类型 (3.10+)"
+                )
 
 
 # —— apply_patch 错误信息格式验证 —— #
