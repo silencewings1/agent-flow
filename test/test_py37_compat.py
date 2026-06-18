@@ -175,14 +175,12 @@ def test_no_py38_walrus() -> None:
 def test_no_py39_pep585() -> None:
     """用 AST 检测 PEP 585 内建泛型订阅 list[int] —— 3.9+ 才支持。
 
-    通过 AST 遍历所有 Subscript 节点，检查 value 是否为内建泛型名。
-    这比 regex 精确，不会漏检 Optional[list[int]] 这种嵌套形式。
-
-    注意：有 `from __future__ import annotations` 的文件在注解位置使用
-    PEP 585 语法是安全的（注解被字符串化，不在运行时 evaluate），
-    因此只报告不在注解上下文的用法。
+    CR 2026-06-18 2.2: 用 AST 祖先链代替脆弱的行内字符位置启发式。
+    关键简化：有 `from __future__ import annotations` 的文件中，注解位置的
+    list[int] 等已被字符串化（AST 中是 Constant 而非 Subscript），所以
+    出现的 Subscript 节点都是运行时用法，全部应报。
     """
-    _PEP585_NAMES = frozenset({"list", "dict", "tuple", "set", "frozenset", "type"})
+    _PEP585_NAMES = frozenset({"list", "dict", "set", "frozenset", "type"})
     for path in _walk_py_files():
         with open(path, "r", encoding="utf-8") as fp:
             src = fp.read()
@@ -190,27 +188,41 @@ def test_no_py39_pep585() -> None:
             tree = ast.parse(src, filename=path)
         except SyntaxError as e:
             raise AssertionError(f"{path} 语法错误: {e}")
-        # 检查是否有 from __future__ import annotations（注解被字符串化，安全）
+        # 有 from __future__ import annotations → 注解位置已字符串化，
+        # Subscript 只出现在运行时上下文 → 全部需要报告
         has_future_annotations = any(
             isinstance(node, ast.ImportFrom)
             and node.module == "__future__"
             and any(alias.name == "annotations" for alias in node.names)
             for node in ast.walk(tree)
         )
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Subscript):
-                if isinstance(node.value, ast.Name) and node.value.id in _PEP585_NAMES:
-                    # 在有 __future__ annotations 的文件中，注解位置是安全的
-                    # 只报告运行时使用（如 isinstance(x, list[int])）
-                    if has_future_annotations:
-                        # 检查行上下文：如果行中有 ':' 且 ':' 在 '[' 之前，很可能是注解
-                        line = src.splitlines()[node.lineno - 1] if node.lineno else ""
-                        if ":" in line and line.index(":") < line.index("["):
+        if has_future_annotations:
+            # 注解已字符串化，出现的 Subscript 都是运行时用法
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Subscript):
+                    if isinstance(node.value, ast.Name) and node.value.id in _PEP585_NAMES:
+                        raise AssertionError(
+                            f"{path}:{node.lineno} 含 PEP 585 内建泛型 "
+                            f"{node.value.id}[...] (3.9+)"
+                        )
+        else:
+            # 无 future annotations → 需要区分注解上下文和运行时上下文
+            # 构建 parent 映射判断 Subscript 是否在注解位置
+            parent_map: dict = {}
+            for parent in ast.walk(tree):
+                for child in ast.iter_child_nodes(parent):
+                    parent_map[child] = parent
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Subscript):
+                    if isinstance(node.value, ast.Name) and node.value.id in _PEP585_NAMES:
+                        # 检查是否在注解上下文中
+                        parent = parent_map.get(node)
+                        if isinstance(parent, (ast.AnnAssign, ast.arg)):
                             continue  # 注解上下文，安全
-                    raise AssertionError(
-                        f"{path}:{node.lineno} 含 PEP 585 内建泛型 "
-                        f"{node.value.id}[...] (3.9+)"
-                    )
+                        raise AssertionError(
+                            f"{path}:{node.lineno} 含 PEP 585 内建泛型 "
+                            f"{node.value.id}[...] (3.9+)"
+                        )
 
 
 def test_no_py310_match_case() -> None:
@@ -246,8 +258,11 @@ def test_no_py310_union_pipe() -> None:
     """
     import re
     # 匹配注解上下文中的 |：函数参数、返回值、变量注解
-    # 要求行中有 ':' (注解) 或 '->' (返回值)，且排除常见的 dict/set union 模式
-    pat = re.compile(r"[:)]\s*[\w\[\],. ]+\s*\|\s*[\w\[\],. ]+")
+    # 两条正则互补：一条匹配 "name: Type | Type"（参数/变量注解），
+    # 一条匹配 "-> Type | Type"（返回类型注解）。
+    # CR 2026-06-18 2.1: 原正则只匹配 : 前缀，漏检 -> 返回类型
+    pat_colon = re.compile(r":\s*[\w\[\],. ]+\s*\|\s*[\w\[\],. ]+")
+    pat_arrow = re.compile(r"->\s*[\w\[\],. ]+\s*\|\s*[\w\[\],. ]+")
     for path in _walk_py_files():
         with open(path, "r", encoding="utf-8") as fp:
             for i, line in enumerate(fp, 1):
@@ -262,7 +277,7 @@ def test_no_py310_union_pipe() -> None:
                 # 必须含 : 或 -> 才可能是类型注解
                 if ":" not in code_part and "->" not in code_part:
                     continue
-                if pat.search(code_part):
+                if pat_colon.search(code_part) or pat_arrow.search(code_part):
                     raise AssertionError(
                         f"{path}:{i} 可能含 PEP 604 X | Y 联合类型 (3.10+): {line.rstrip()}"
                     )
