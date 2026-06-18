@@ -175,7 +175,7 @@ def test_run_cmd_success():
         # CR 2026-06-17: python3 移出白名单；改用 echo 验证 exit 0 路径
         result = f.rt.run_cmd("echo 1")
         assert result["exit_code"] == 0, f"exit_code 应为 0，实际 {result['exit_code']}"
-        assert result["stdout"].strip() == "1", f"stdout 应为 '1'，实际 {result['stdout']!r}"
+        assert result["stdout"].strip() == "1", f"stdout 应为 '1'，实际 {repr(result['stdout'])}"
         assert result["duration_ms"] >= 0
         print("✅ test_run_cmd_success 通过")
     finally:

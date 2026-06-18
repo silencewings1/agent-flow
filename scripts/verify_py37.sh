@@ -5,14 +5,18 @@
 set -e
 cd "$(dirname "$0")/.."
 
-# 选 Python 解释器：优先 3.7，其次 3.8，最后 fallback 到当前 python3
+# 选 Python 解释器：必须 3.7 或 3.8。fallback 到 3.9+ 不算 3.7 兼容验证。
+# CR 2026-06-18 2.1: 没有真 3.7/3.8 时必须 exit 1，不允许静默回退给"全绿"假象。
 if command -v python3.7 >/dev/null 2>&1; then
     PY37=python3.7
 elif command -v python3.8 >/dev/null 2>&1; then
     PY37=python3.8
 else
-    echo "[WARN] 没有 python3.7/3.8，回退到当前 python3（只做 AST + import 检查）"
-    PY37=python3
+    echo "[ERROR] 没有 python3.7/3.8，无法验证 3.7 兼容性。"
+    echo "        当前 python3 是：$(python3 --version 2>&1)"
+    echo "        请在 CI 镜像或容器中用 3.7/3.8 跑此脚本。"
+    echo "        不要用 3.9+ 跑——本脚本的目的是确认 3.7 兼容，3.9+ 跑过不能证明 3.7 兼容。"
+    exit 1
 fi
 
 echo "=== 使用解释器: $($PY37 --version) ==="
