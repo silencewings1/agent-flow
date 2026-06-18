@@ -131,10 +131,20 @@ def coder(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     workdir_explicit = "workdir" in state
     workdir = state.get("workdir", tempfile.mkdtemp(prefix="af-coder-"))
 
+    # CR 2026-06-18 1.1: 收集已有 id，避免自动分配时冲突
+    existing_ids = {t.get("id") for t in plan_tasks if t.get("id")}
+
     artifacts = []
     for i, task in enumerate(plan_tasks):
-        task_id = task.get("id") or f"t{i+1}"
-        if not task.get("id"):
+        task_id = task.get("id")
+        if not task_id:
+            # 自动分配一个不冲突的 id
+            candidate = f"t{i+1}"
+            while candidate in existing_ids:
+                i += 1
+                candidate = f"t{i+1}"
+            task_id = candidate
+            existing_ids.add(task_id)
             import warnings
             warnings.warn(f"[Coder] task #{i+1} 缺 id，自动分配为 '{task_id}'")
         task_title = task.get("title", "")
