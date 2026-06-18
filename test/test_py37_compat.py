@@ -126,22 +126,27 @@ def test_no_py38_fstring_debug() -> None:
 
 
 def test_no_py38_fstring_conversion() -> None:
-    """扫描 f-string conversion f'{var!r}' / '{var!s}' / '{var!a}' —— 3.8+ 才支持。"""
-    import re
-    pat = re.compile(r"""f['"][^'"]*\{[^{}]*![rsa]\}""")
+    """扫描 f-string conversion f'{var!r}' / '{var!s}' / '{var!a}' —— 3.8+ 才支持。
+
+    CR 2026-06-18 1.2: 用 AST 代替 regex 避免 false negative（regex 会被
+    f-string 内的单引号切断）。AST.FormattedValue.conversion 是 int:
+    -1=无, 114=repr(!r), 115=str(!s), 97=ascii(!a)
+    """
     for path in _walk_py_files():
-        # 跳过本测试文件自身的文档字符串（含 f'{var!r}' 示例）
         if path.endswith("test_py37_compat.py"):
             continue
         with open(path, "r", encoding="utf-8") as fp:
-            for i, line in enumerate(fp, 1):
-                stripped = line.lstrip()
-                if stripped.startswith("#"):
-                    continue
-                if pat.search(line):
-                    raise AssertionError(
-                        f"{path}:{i} 含 3.8+ f-string conversion: {line.rstrip()}"
-                    )
+            src = fp.read()
+        try:
+            tree = ast.parse(src, filename=path)
+        except SyntaxError as e:
+            raise AssertionError(f"{path} 解析失败: {e}")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FormattedValue) and node.conversion != -1:
+                raise AssertionError(
+                    f"{path}:{node.lineno} 含 3.8+ f-string conversion "
+                    f"(conversion={node.conversion}, 应改为 repr(...))"
+                )
 
 
 def test_no_py38_walrus() -> None:
