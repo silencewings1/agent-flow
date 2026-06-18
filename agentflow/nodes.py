@@ -76,11 +76,14 @@ def planner(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
         )
     except Exception:
         llm_text = ""
-    # 三层 fallback：直接 JSON → ```json``` 代码块 → 确定性 mock
-    plan = parse_plan_from_llm(llm_text, requirement)
-    # 兜底：若 LLM 输出解析后 task 为空，用种子 task 补；summary 为空则补默认
+    # 三层 fallback：直接 JSON → ```json``` 代码块 → 优先 tasks_seed / mock
+    plan = parse_plan_from_llm(llm_text, requirement, tasks_seed=tasks_seed)
+    # 兜底：若 LLM 输出解析后 task 为空，优先用种子 task（保留确定性拆分）
     if not plan.tasks:
         plan.tasks = tasks_seed
+    # 若种子也没有（requirement 本身是空串？），最终兜底
+    if not plan.tasks:
+        plan.tasks = [{"id": "t1", "title": requirement, "details": requirement}]
     if not plan.summary or not plan.summary.strip():
         plan.summary = f"实现 {requirement}"
     # 兜底：保证每个 task 至少有 id+title 两个字段
@@ -175,6 +178,13 @@ def coder(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     if workdir_explicit:
         result["artifacts"] = artifacts
         result["workdir"] = workdir
+    else:
+        # CR Backlog 2026-06-18 2.3: 自建的临时 workdir 用后即清理
+        import shutil
+        try:
+            shutil.rmtree(workdir, ignore_errors=True)
+        except Exception:
+            pass
     return result
 
 
@@ -235,6 +245,37 @@ def debugger(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     import shlex
     import subprocess as _subprocess
     import time as _time
+
+    # CR Backlog 2026-06-18 2.2: 探测 pytest 是否可用
+    try:
+        _probe = _subprocess.run(
+            ["pytest", "--version"], capture_output=True, text=True, timeout=5,
+        )
+        _pytest_available = _probe.returncode == 0
+    except (FileNotFoundError, _subprocess.TimeoutExpired):
+        _pytest_available = False
+
+    if not _pytest_available:
+        # 无 pytest → fallback 到旧 pass_at_version 行为
+        passed = version >= state.get("pass_at_version", 3)
+        failures = [] if passed else [
+            {"test_name": "pytest_unavailable",
+             "error_msg": "pytest 不可用，使用 pass_at_version 判定"}
+        ]
+        try:
+            report = ctx.activity("llm_complete", lambda: get_registry().complete(
+                "debugger",
+                f"pytest 不可用，对 v{version} 代码做测试评估，是否通过：{passed}",
+                system="你是测试工程师，输出简短测试结论。",
+            ))
+        except Exception:
+            report = "[LLM 不可用，使用确定性测试结论]"
+        return {
+            "tests_passed": passed,
+            "test_failures": failures,
+            "test_report": report,
+            "log": [f"[Debugger] pytest 不可用，测试 v{version}: {'通过' if passed else '失败 → 退回 Coder'}"],
+        }
     test_files_arg = shlex.join(test_files)
     cmd = f"pytest {test_files_arg} --tb=short -q"
 
@@ -348,7 +389,13 @@ def ai_review(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
 
 
 def human_review(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
-    """人在回路：基于 AI 评审意见决定合并/打回。中断等待人工输入。"""
+    """人在回路：基于 AI 评审意见决定合并/打回。中断等待人工输入。
+
+    resume 值可以是：
+    - True / False (bare bool)：True=合并，False=打回
+    - {"approve": True/False} (dict)：同上
+    - 其他 truthy/falsy 值：按 bool() 判定
+    """
     decision = ctx.interrupt({
         "ask": "请评审并决定是否合并",
         "code_version": state["code_version"],

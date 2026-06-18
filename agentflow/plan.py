@@ -61,6 +61,8 @@ class Plan:
                 errs.append(f"task[{i}] 缺少 id")
             if "title" not in t or not str(t.get("title", "")).strip():
                 errs.append(f"task[{i}] 缺少 title")
+            if "details" in t and not isinstance(t["details"], str):
+                errs.append(f"task[{i}].details 应为 str 类型")
         return errs
 
 
@@ -91,12 +93,13 @@ def _mock_plan(requirement: str) -> Plan:
     )
 
 
-def parse_plan_from_llm(llm_text: str, requirement: str) -> Plan:
+def parse_plan_from_llm(llm_text: str, requirement: str,
+                        tasks_seed: Optional[List[Dict]] = None) -> Plan:
     """三层 fallback 解析 LLM 输出为 Plan。
 
     1. 直接 `json.loads(llm_text.strip())`
     2. 正则提取 ```json ... ```（或 ``` ... ```）代码块后再 json.loads
-    3. 确定性 mock：1 个 task = requirement 本身
+    3. 优先用 tasks_seed（保留确定性拆分），再兜底 _mock_plan
 
     每层失败都打 warning 日志（用 print，不用 logging 库）。
     最终一定返回合法 Plan（保证 pipeline 不会因解析失败而中断）。
@@ -115,23 +118,39 @@ def parse_plan_from_llm(llm_text: str, requirement: str) -> Plan:
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             print(f"[plan] WARN: 第 1 层直接 JSON 解析失败: {exc}")
 
-    # 第 2 层：正则提取 ```json ... ``` 代码块
+    # 第 2 层：正则提取 ```json ... ```（或 ``` ... ```）代码块，依次尝试直到 validate 通过
     if text:
-        m = _JSON_BLOCK_RE.search(text)
-        if m:
+        found_any = False
+        for m in _JSON_BLOCK_RE.finditer(text):
+            found_any = True
             block = m.group(1).strip()
             try:
                 obj = json.loads(block)
                 plan = _coerce_to_plan(obj)
                 if plan is not None and not plan.validate():
+                    print(f"[plan] INFO: 第 2 层 JSON 块解析成功且 validate 通过")
                     return plan
                 if plan is not None:
                     print(f"[plan] WARN: 第 2 层代码块 JSON validate 失败: {plan.validate()}")
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
                 print(f"[plan] WARN: 第 2 层代码块 JSON 解析失败: {exc}")
-        else:
+        if not found_any:
             print(f"[plan] WARN: 第 2 层未找到 ```json ... ``` 代码块")
 
-    # 第 3 层：确定性 mock
-    print("[plan] WARN: 走第 3 层 fallback（确定性 mock）")
-    return _mock_plan(requirement)
+    # 第 3 层：优先用 tasks_seed（保留确定性拆分），再兜底 _mock_plan
+    print("[plan] WARN: 走第 3 层 fallback")
+    if tasks_seed:
+        plan = Plan(
+            summary=f"实现 {requirement}",
+            tasks=tasks_seed,
+            acceptance_criteria=[],
+            clarifying_questions=[],
+        )
+    else:
+        plan = _mock_plan(requirement)
+    # 尝试从 LLM 原文本中提取澄清问题（？ 结尾的句子）
+    if text and not plan.clarifying_questions:
+        questions = re.findall(r'([^。！？\n]*？)', text)
+        if questions:
+            plan.clarifying_questions = [q.strip() for q in questions[:5]]
+    return plan
