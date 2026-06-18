@@ -131,13 +131,6 @@ def test_parse_empty_string_falls_back_to_mock():
 
 # —— 用例 6：planner 节点返回的 state["plan"] 是 dict，state["tasks"] 是 id 列表 —— #
 def test_planner_node_returns_structured_state():
-    # mock LLM：返回合法 JSON
-    reg = LLMRegistry(
-        providers={},
-        nodes={
-            "planner": {"provider": "mock"},
-        },
-    )
     # 重写 mock 行为：让 LLM 直接返回结构化 JSON
     reg = LLMRegistry(
         providers={
