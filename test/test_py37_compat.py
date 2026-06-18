@@ -173,22 +173,43 @@ def test_no_py38_walrus() -> None:
 
 
 def test_no_py39_pep585() -> None:
-    """扫描 PEP 585 内建泛型订阅 list[int] —— 3.9+ 才支持。
+    """用 AST 检测 PEP 585 内建泛型订阅 list[int] —— 3.9+ 才支持。
 
-    简化：检查源码里有没有 list[...]/dict[...]/tuple[...] 等模式作为类型注解。
+    通过 AST 遍历所有 Subscript 节点，检查 value 是否为内建泛型名。
+    这比 regex 精确，不会漏检 Optional[list[int]] 这种嵌套形式。
+
+    注意：有 `from __future__ import annotations` 的文件在注解位置使用
+    PEP 585 语法是安全的（注解被字符串化，不在运行时 evaluate），
+    因此只报告不在注解上下文的用法。
     """
-    import re
-    # 类型注解里的内建泛型订阅，如 def foo(x: list[int]) -> dict[str, int]:
-    pat = re.compile(r":\s*(list|dict|set|tuple|frozenset|collections\.\w+)\[")
+    _PEP585_NAMES = frozenset({"list", "dict", "tuple", "set", "frozenset", "type"})
     for path in _walk_py_files():
         with open(path, "r", encoding="utf-8") as fp:
-            for i, line in enumerate(fp, 1):
-                stripped = line.lstrip()
-                if stripped.startswith("#"):
-                    continue
-                if pat.search(line):
+            src = fp.read()
+        try:
+            tree = ast.parse(src, filename=path)
+        except SyntaxError as e:
+            raise AssertionError(f"{path} 语法错误: {e}")
+        # 检查是否有 from __future__ import annotations（注解被字符串化，安全）
+        has_future_annotations = any(
+            isinstance(node, ast.ImportFrom)
+            and node.module == "__future__"
+            and any(alias.name == "annotations" for alias in node.names)
+            for node in ast.walk(tree)
+        )
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Subscript):
+                if isinstance(node.value, ast.Name) and node.value.id in _PEP585_NAMES:
+                    # 在有 __future__ annotations 的文件中，注解位置是安全的
+                    # 只报告运行时使用（如 isinstance(x, list[int])）
+                    if has_future_annotations:
+                        # 检查行上下文：如果行中有 ':' 且 ':' 在 '[' 之前，很可能是注解
+                        line = src.splitlines()[node.lineno - 1] if node.lineno else ""
+                        if ":" in line and line.index(":") < line.index("["):
+                            continue  # 注解上下文，安全
                     raise AssertionError(
-                        f"{path}:{i} 含 PEP 585 内建泛型 (3.9+): {line.rstrip()}"
+                        f"{path}:{node.lineno} 含 PEP 585 内建泛型 "
+                        f"{node.value.id}[...] (3.9+)"
                     )
 
 
@@ -217,26 +238,30 @@ def test_no_py310_match_case() -> None:
 
 
 def test_no_py310_union_pipe() -> None:
-    """扫描 X | Y 联合类型语法（注解里）—— 3.10+ 才支持。
+    """检测 PEP 604 X | Y 联合类型 —— 3.10+ 才支持。
 
-    简化：找 type alias 形式 X | Y 出现在注解位置。启发式：函数参数/返回值
-    冒号后有大写类型 + | + 大写类型。
+    改进的正则：允许小写类型名（int | str, int | None 等），覆盖了旧正则
+    漏检的最常见 PEP 604 写法。同时用行级上下文过滤（必须含 ':' 或 '->'），
+    避免误报普通代码中的 | 操作（如 set union）。
     """
     import re
-    # 注解里的 union 形式：(int | str)，  int | str,  Optional[int] | str
-    pat = re.compile(r":\s*[\(]?\s*[A-Z][A-Za-z0-9_.\[\], ]*\|\s*[A-Z][A-Za-z0-9_.\[\], ]*[\)]?\s*(=|,|\)|\s*$)")
+    # 匹配注解上下文中的 |：函数参数、返回值、变量注解
+    # 要求行中有 ':' (注解) 或 '->' (返回值)，且排除常见的 dict/set union 模式
+    pat = re.compile(r"[:)]\s*[\w\[\],. ]+\s*\|\s*[\w\[\],. ]+")
     for path in _walk_py_files():
         with open(path, "r", encoding="utf-8") as fp:
             for i, line in enumerate(fp, 1):
-                # 跳过纯注释行（包括 "HTTP 协议: anthropic | openai" 之类的注释）
                 stripped = line.lstrip()
                 if stripped.startswith("#"):
                     continue
-                # 跳过内联注释：| 之后到 # 之前都是注释内容
+                # 跳过内联注释
                 if "#" in line:
                     code_part = line.split("#", 1)[0]
                 else:
                     code_part = line
+                # 必须含 : 或 -> 才可能是类型注解
+                if ":" not in code_part and "->" not in code_part:
+                    continue
                 if pat.search(code_part):
                     raise AssertionError(
                         f"{path}:{i} 可能含 PEP 604 X | Y 联合类型 (3.10+): {line.rstrip()}"

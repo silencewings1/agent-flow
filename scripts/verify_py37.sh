@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # 验证代码在 Python 3.7 下能跑
 # 注意：当前环境是 3.14，验证的是"代码不含 3.8+ 才支持的语法"。
 # 真正的 3.7 跑测需要在 3.7 环境（CI/容器）跑此脚本。
@@ -7,7 +7,10 @@ cd "$(dirname "$0")/.."
 
 # 选 Python 解释器：必须 3.7 或 3.8。fallback 到 3.9+ 不算 3.7 兼容验证。
 # CR 2026-06-18 2.1: 没有真 3.7/3.8 时必须 exit 1，不允许静默回退给"全绿"假象。
-if command -v python3.7 >/dev/null 2>&1; then
+# CR Backlog 2026-06-18 2.3: 允许 CI 通过 PYTHON37 环境变量指定解释器路径。
+if [ -n "${PYTHON37:-}" ] && command -v "$PYTHON37" >/dev/null 2>&1; then
+    PY37="$PYTHON37"
+elif command -v python3.7 >/dev/null 2>&1; then
     PY37=python3.7
 elif command -v python3.8 >/dev/null 2>&1; then
     PY37=python3.8
