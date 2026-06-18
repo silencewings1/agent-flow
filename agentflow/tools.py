@@ -68,7 +68,7 @@ def _check_no_dotdot(path: str) -> None:
             continue
         if _DOTDOT_RE.search(token):
             raise PermissionError(
-                f"run_cmd 拒绝包含 '..' 路径穿越的输入: {token!r}"
+                f"run_cmd 拒绝包含 '..' 路径穿越的输入: {repr(token)}"
             )
 
 
@@ -92,7 +92,7 @@ def _check_paths_in_workdir(cmd: str, cmd_name: str, workdir: str) -> None:
             real = os.path.realpath(token)
             if not (real == workdir_real or real.startswith(workdir_real + os.sep)):
                 raise PermissionError(
-                    f"run_cmd {cmd_name!r} 拒绝绝对路径 {token!r}："
+                    f"run_cmd {repr(cmd_name)} 拒绝绝对路径 {repr(token)}："
                     f"必须落在 workdir {workdir_real} 内"
                 )
         # 相对路径：subprocess 已经在 cwd=workdir 下跑，自动安全，无需校验
@@ -106,7 +106,7 @@ def _resolve_within_workdir(workdir: str, path: str) -> str:
         abs_path = os.path.realpath(os.path.join(workdir, path))
     real_workdir = os.path.realpath(workdir)
     if not (abs_path == real_workdir or abs_path.startswith(real_workdir + os.sep)):
-        raise PermissionError(f"路径 {path!r} 超出 workdir 沙箱 {workdir!r}")
+        raise PermissionError(f"路径 {repr(path)} 超出 workdir 沙箱 {repr(workdir)}")
     return abs_path
 
 
@@ -150,7 +150,7 @@ class ToolRuntime:
         """列目录条目名。path 相对 workdir 或绝对（必须落在 workdir 内）。"""
         full = _resolve_within_workdir(self.workdir, path)
         if not os.path.isdir(full):
-            raise FileNotFoundError(f"不是目录或不存在: {path!r}")
+            raise FileNotFoundError(f"不是目录或不存在: {repr(path)}")
         return sorted(os.listdir(full))
 
     # —— Patch —— #
@@ -167,7 +167,7 @@ class ToolRuntime:
         # CR 2026-06-17 2.1: 拒绝空 diff，避免静默创建空文件
         if not unified_diff or not unified_diff.strip():
             raise ValueError(
-                f"apply_patch 需要非空 unified_diff（path={path!r}）"
+                f"apply_patch 需要非空 unified_diff（path={repr(path)}）"
             )
         full = _resolve_within_workdir(self.workdir, path)
         # patch 需要文件存在（即使是空文件）；不存在则建空文件
@@ -240,7 +240,7 @@ class ToolRuntime:
         if not any(first_base == p or first_base == p + ".exe"
                    for p in _CMD_ALLOWED_PREFIXES):
             raise PermissionError(
-                f"run_cmd 拒绝未在白名单中的命令: {first_base!r} "
+                f"run_cmd 拒绝未在白名单中的命令: {repr(first_base)} "
                 f"（允许: {', '.join(_CMD_ALLOWED_PREFIXES)}）"
             )
         # 对文件读命令（cat/ls），强制参数路径在 workdir 内（CR 2026-06-17:1.2）

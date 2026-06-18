@@ -216,7 +216,7 @@ def test_debugger_regex_class_based_test():
     m = re.match(r"FAILED\s+(\S+(?:::\S+)*)\s*[-:]\s*(.*)", line)
     assert m, f"正则应匹配 class-based test，实际未匹配"
     assert m.group(1) == "test_file.py::TestClass::test_method", \
-        f"test_name 应为完整路径，实际 {m.group(1)!r}"
+        f"test_name 应为完整路径，实际 {repr(m.group(1))}"
     assert "AssertionError" in m.group(2)
     print(f"✅ test_debugger_regex_class_based_test 通过: {m.group(1)}")
 

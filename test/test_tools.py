@@ -49,7 +49,7 @@ def test_read_file_existing():
         with open(path, "w", encoding="utf-8") as fp:
             fp.write("hi 你好")
         content = f.rt.read_file("hello.txt")
-        assert content == "hi 你好", f"内容不匹配: {content!r}"
+        assert content == "hi 你好", f"内容不匹配: {repr(content)}"
         print("✅ test_read_file_existing 通过")
     finally:
         f.teardown()
@@ -347,8 +347,8 @@ def test_tool_key_disambiguates_multiple_calls():
 
         r = app.invoke({}, thread_id="key_test")
         assert r.status == "completed"
-        assert r.state["a"] == "content A", f"a 应是 content A，实际 {r.state['a']!r}"
-        assert r.state["b"] == "content B", f"b 应是 content B，实际 {r.state['b']!r}"
+        assert r.state["a"] == "content A", f"a 应是 content A，实际 {repr(r.state['a'])}"
+        assert r.state["b"] == "content B", f"b 应是 content B，实际 {repr(r.state['b'])}"
         print("✅ test_tool_key_disambiguates_multiple_calls 通过")
     finally:
         f.teardown()
@@ -377,7 +377,7 @@ def test_tool_key_collision_known_behavior():
         r = app.invoke({}, thread_id="collision_test")
         # 第二次调用因为 key 撞缓存，fn 不执行，直接返回第一次结果
         assert r.state["a"] == "content A"
-        assert r.state["b"] == "content A", f"撞缓存：b 应返回 a 的结果，实际 {r.state['b']!r}"
+        assert r.state["b"] == "content A", f"撞缓存：b 应返回 a 的结果，实际 {repr(r.state['b'])}"
         assert call_count["a"] == 1
         assert call_count["b"] == 0, f"撞缓存后第二次 fn 不应执行，实际 call_count['b']={call_count['b']}"
         print("✅ test_tool_key_collision_known_behavior 通过（同 key 撞缓存是已知行为）")
@@ -409,7 +409,7 @@ def test_tool_warns_on_unknown_kwargs():
         with contextlib.redirect_stdout(buf):
             r = app.invoke({}, thread_id="kwarg_test")
         output = buf.getvalue()
-        assert "WARN" in output and "input_sumary" in output, f"应打 WARN 含 typo key，实际输出: {output!r}"
+        assert "WARN" in output and "input_sumary" in output, f"应打 WARN 含 typo key，实际输出: {repr(output)}"
         assert r.status == "completed"
         print("✅ test_tool_warns_on_unknown_kwargs 通过")
     finally:
@@ -472,7 +472,7 @@ def test_apply_patch_rejects_empty_diff():
         for empty in ("", "   ", "\n\n"):
             try:
                 f.rt.apply_patch("evil.py", empty)
-                assert False, f"应拒绝空 diff {empty!r} 但接受了"
+                assert False, f"应拒绝空 diff {repr(empty)} 但接受了"
             except ValueError as e:
                 assert "非空" in str(e), f"错误信息应提'非空': {e}"
         # 验证文件确实没创建
@@ -491,7 +491,7 @@ def test_git_diff_in_non_git_repo():
     try:
         # workdir 是新建空目录，.git 不存在
         out = f.rt.git_diff("HEAD")
-        assert out == "", f"非 git 仓库应返回空字符串，实际 {out!r}"
+        assert out == "", f"非 git 仓库应返回空字符串，实际 {repr(out)}"
         # 两次 ref 也不报错
         out2 = f.rt.git_diff("HEAD", "HEAD")
         assert out2 == ""
