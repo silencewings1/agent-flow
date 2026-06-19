@@ -198,4 +198,5 @@ graph TD
 - P0/P1 修复、JSON 图配置、README 更新已完成。
 - 本轮 P2 flaky 修复已完成，`test/test_activity.py` 中 activity duration 断言已调整为允许 0ms 的合法极快调用耗时，自测验证通过。
 - `conf/graph_config.example.json` 已全量切换为 canonical `nodes` 对象映射 + `fn` 写法，README JSON 图配置说明已同步；示例中不再保留 list / string / `handler` 兼容写法。
+- Dev 本轮已增强 `agentflow/graph_config.py` 配置校验：`max_steps`、canonical node `fn`、节点 retry 字段、`edges` / `conditional_edges` 类型和条件边来源会在构图阶段抛带 graph/field/node 上下文的 `ValueError`；CR 尚未执行。
 - 当前剩余建议：长期 P2/设计项继续按后续规划处理。

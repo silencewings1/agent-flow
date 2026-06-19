@@ -192,6 +192,7 @@ app = build_graph_from_config(
 - `edges` / router 返回值里的 `"START"`、`"END"` 会映射到内置 `START` / `END` sentinel。
 - `node` 和 `router` 只从调用方显式传入的 registry 白名单解析；JSON 不允许任意 `import` / `eval`。
 - 示例配置统一采用对象映射 + `fn` 的规范写法：`"nodes": {"planner": {"fn": "planner"}, "coder": {"fn": "dummy_coder_fix_test"}}`；带重试的节点写作 `"flaky": {"fn": "flaky", "retries": 2}`。
+- 配置校验失败会抛 `ValueError`，错误信息包含 graph 名、字段名或节点名，便于定位 JSON。
 - 入口 API 是 `load_graph_config()` + `build_graph_from_config()`；如需先做静态检查，也可先取 `build_state_graph_from_config()` 再 `validate()` / `to_mermaid()`。
 
 ## 接入真实 LLM：每节点独立配置

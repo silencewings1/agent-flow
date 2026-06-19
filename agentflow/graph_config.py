@@ -7,6 +7,7 @@ evaluates code from JSON.
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 from .checkpoint import Checkpointer
@@ -74,31 +75,40 @@ def build_state_graph_from_config(
     if not isinstance(spec, Mapping):
         raise ValueError(f"graph {graph_name} 必须是对象")
 
-    schema = StateSchema(reducers=_parse_reducers(spec.get("reducers", {})))
-    max_steps = int(spec.get("max_steps", 50))
+    schema = StateSchema(reducers=_parse_reducers(spec.get("reducers", {}), graph_name))
+    max_steps = _parse_positive_int(spec.get("max_steps", 50), graph_name, "max_steps")
     g = StateGraph(schema, max_steps=max_steps)
 
-    for node_spec in _iter_node_specs(spec.get("nodes", [])):
-        node = _parse_node(node_spec)
+    for node_spec in _iter_node_specs(spec.get("nodes", []), graph_name):
+        node = _parse_node(node_spec, graph_name)
         handler_name = node["handler"]
         if handler_name not in node_registry:
-            raise ValueError(f"未知 node: {handler_name}")
+            raise ValueError(f"graph {graph_name} 未知 node: {handler_name}")
         g.add_node(
             node["name"],
             node_registry[handler_name],
-            retries=int(node.get("retries", 0)),
-            retry_backoff=float(node.get("retry_backoff", 0.0)),
+            retries=_parse_non_negative_int(
+                node.get("retries", 0), graph_name, node["name"], "retries"
+            ),
+            retry_backoff=_parse_non_negative_float(
+                node.get("retry_backoff", 0.0),
+                graph_name,
+                node["name"],
+                "retry_backoff",
+            ),
         )
 
-    for edge_spec in spec.get("edges", []):
-        src, dst = _parse_edge(edge_spec)
+    for index, edge_spec in enumerate(_parse_list_field(spec, graph_name, "edges")):
+        src, dst = _parse_edge(edge_spec, graph_name, index)
         g.add_edge(_alias_node(src), _alias_node(dst))
 
-    for cond_spec in spec.get("conditional_edges", []):
-        cond = _parse_conditional_edge(cond_spec)
+    for index, cond_spec in enumerate(
+        _parse_list_field(spec, graph_name, "conditional_edges")
+    ):
+        cond = _parse_conditional_edge(cond_spec, graph_name, index)
         router_name = cond["router"]
         if router_name not in router_registry:
-            raise ValueError(f"未知 router: {router_name}")
+            raise ValueError(f"graph {graph_name} 未知 router: {router_name}")
         g.add_conditional_edges(
             _alias_node(cond["from"]),
             _wrap_router_aliases(router_registry[router_name]),
@@ -107,50 +117,51 @@ def build_state_graph_from_config(
     return g
 
 
-def _parse_reducers(raw: Any) -> Dict[str, Callable[[Any, Any], Any]]:
+def _parse_reducers(raw: Any, graph_name: str) -> Dict[str, Callable[[Any, Any], Any]]:
     if raw is None:
         return {}
     if not isinstance(raw, Mapping):
-        raise ValueError("reducers 必须是对象")
+        raise ValueError(f"graph {graph_name} reducers 必须是对象")
     reducers = {}
     for key, reducer_name in raw.items():
         if reducer_name not in _REDUCERS:
-            raise ValueError(f"未知 reducer: {reducer_name}")
+            raise ValueError(f"graph {graph_name} 未知 reducer: {reducer_name}")
         reducers[str(key)] = _REDUCERS[reducer_name]
     return reducers
 
 
-def _iter_node_specs(raw: Any) -> List[Any]:
-    if raw is None:
-        return []
+def _iter_node_specs(raw: Any, graph_name: str) -> List[Any]:
     if isinstance(raw, Mapping):
         specs = []
         for name, node_spec in raw.items():
-            if isinstance(node_spec, Mapping):
-                spec = dict(node_spec)
-                spec.setdefault("name", name)
-            elif isinstance(node_spec, str):
-                spec = {"name": name, "handler": node_spec}
-            elif node_spec is None:
-                spec = {"name": name, "handler": name}
-            else:
-                raise ValueError("nodes 对象的值必须是对象、字符串或 null")
+            if not isinstance(node_spec, Mapping):
+                raise ValueError(
+                    f"graph {graph_name} node {name} spec 必须是对象"
+                )
+            spec = dict(node_spec)
+            if "fn" not in spec:
+                raise ValueError(
+                    f"graph {graph_name} node {name} 必须显式配置 fn"
+                )
+            spec.setdefault("name", name)
             specs.append(spec)
         return specs
     if isinstance(raw, list):
         return raw
-    raise ValueError("nodes 必须是数组或对象")
+    raise ValueError(f"graph {graph_name} nodes 必须是数组或对象")
 
 
-def _parse_node(raw: Any) -> Dict[str, Any]:
+def _parse_node(raw: Any, graph_name: str) -> Dict[str, Any]:
     if isinstance(raw, str):
         return {"name": raw, "handler": raw}
     if not isinstance(raw, Mapping):
-        raise ValueError("nodes 项必须是字符串或对象")
+        raise ValueError(f"graph {graph_name} nodes 项必须是字符串或对象")
     name = raw.get("name")
-    handler = raw.get("handler", raw.get("fn", name))
+    handler = raw.get("handler", raw.get("fn"))
     if not name or not handler:
-        raise ValueError("node 必须包含 name，且 handler 不能为空")
+        raise ValueError(
+            f"graph {graph_name} node 必须包含 name，且 handler/fn 不能为空"
+        )
     return {
         "name": str(name),
         "handler": str(handler),
@@ -159,22 +170,92 @@ def _parse_node(raw: Any) -> Dict[str, Any]:
     }
 
 
-def _parse_edge(raw: Any) -> List[str]:
+def _parse_edge(raw: Any, graph_name: str, index: int) -> List[str]:
     if isinstance(raw, (list, tuple)) and len(raw) == 2:
         return [str(raw[0]), str(raw[1])]
     if isinstance(raw, Mapping) and "from" in raw and "to" in raw:
         return [str(raw["from"]), str(raw["to"])]
-    raise ValueError("edges 项必须是 [from, to] 或 {from, to}")
+    raise ValueError(
+        f"graph {graph_name} edges[{index}] 必须是 [from, to] 或 {{from, to}}"
+    )
 
 
-def _parse_conditional_edge(raw: Any) -> Dict[str, str]:
+def _parse_conditional_edge(raw: Any, graph_name: str, index: int) -> Dict[str, str]:
     if not isinstance(raw, Mapping):
-        raise ValueError("conditional_edges 项必须是对象")
+        raise ValueError(f"graph {graph_name} conditional_edges[{index}] 必须是对象")
     src = raw.get("from")
     router = raw.get("router")
     if not src or not router:
-        raise ValueError("conditional_edges 项必须包含 from 和 router")
-    return {"from": str(src), "router": str(router)}
+        raise ValueError(
+            f"graph {graph_name} conditional_edges[{index}] 必须包含 from 和 router"
+        )
+    src_name = str(src)
+    if _alias_node(src_name) in (START, END):
+        raise ValueError(
+            f"graph {graph_name} conditional_edges[{index}].from 不能是 START 或 END"
+        )
+    return {"from": src_name, "router": str(router)}
+
+
+def _parse_list_field(spec: Mapping[str, Any], graph_name: str, field: str) -> List[Any]:
+    raw = spec.get(field, [])
+    if not isinstance(raw, list):
+        raise ValueError(f"graph {graph_name} {field} 必须是数组")
+    return raw
+
+
+def _parse_positive_int(raw: Any, graph_name: str, field: str) -> int:
+    value = _parse_int(raw, f"graph {graph_name} {field} 必须是 > 0 的整数")
+    if value <= 0:
+        raise ValueError(f"graph {graph_name} {field} 必须是 > 0 的整数")
+    return value
+
+
+def _parse_non_negative_int(raw: Any, graph_name: str, node_name: str, field: str) -> int:
+    value = _parse_int(
+        raw, f"graph {graph_name} node {node_name} {field} 必须是 >= 0 的整数"
+    )
+    if value < 0:
+        raise ValueError(
+            f"graph {graph_name} node {node_name} {field} 必须是 >= 0 的整数"
+        )
+    return value
+
+
+def _parse_non_negative_float(
+    raw: Any, graph_name: str, node_name: str, field: str
+) -> float:
+    if isinstance(raw, bool):
+        raise ValueError(
+            f"graph {graph_name} node {node_name} {field} 必须是 >= 0 的数字"
+        )
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"graph {graph_name} node {node_name} {field} 必须是 >= 0 的数字"
+        )
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError(
+            f"graph {graph_name} node {node_name} {field} 必须是 >= 0 的数字"
+        )
+    return value
+
+
+def _parse_int(raw: Any, error_message: str) -> int:
+    if isinstance(raw, bool):
+        raise ValueError(error_message)
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            raise ValueError(error_message)
+        try:
+            return int(text)
+        except ValueError:
+            raise ValueError(error_message)
+    raise ValueError(error_message)
 
 
 def _alias_node(name: str) -> str:

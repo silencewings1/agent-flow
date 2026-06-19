@@ -189,6 +189,124 @@ def test_unknown_node_router_and_reducer_raise_value_error():
         )
 
 
+@pytest.mark.parametrize("max_steps", [0, -1, "0", "abc", None, True])
+def test_invalid_max_steps_raises_value_error_with_context(max_steps):
+    with pytest.raises(ValueError, match="graph g .*max_steps"):
+        build_graph_from_config(
+            graph_config("g", {
+                "max_steps": max_steps,
+                "nodes": {"a": {"fn": "a"}},
+                "edges": [["START", "a"]],
+            }),
+            "g", NODES, ROUTERS, Checkpointer(),
+        )
+
+
+@pytest.mark.parametrize("nodes", ["a", 1, None, True])
+def test_nodes_must_be_list_or_object(nodes):
+    with pytest.raises(ValueError, match="graph g .*nodes"):
+        build_graph_from_config(
+            graph_config("g", {
+                "nodes": nodes,
+                "edges": [["START", "a"]],
+            }),
+            "g", NODES, ROUTERS, Checkpointer(),
+        )
+
+
+@pytest.mark.parametrize("node_spec", ["a", None, 1, True])
+def test_nodes_mapping_specs_must_be_objects(node_spec):
+    with pytest.raises(ValueError, match="graph g .*node a .*对象"):
+        build_graph_from_config(
+            graph_config("g", {
+                "nodes": {"a": node_spec},
+                "edges": [["START", "a"]],
+            }),
+            "g", NODES, ROUTERS, Checkpointer(),
+        )
+
+
+def test_canonical_node_mapping_requires_fn():
+    with pytest.raises(ValueError, match="graph g .*node a .*fn"):
+        build_graph_from_config(
+            graph_config("g", {
+                "nodes": {"a": {"retries": 0}},
+                "edges": [["START", "a"]],
+            }),
+            "g", NODES, ROUTERS, Checkpointer(),
+        )
+
+
+def test_negative_retries_raise_value_error_with_node_context():
+    with pytest.raises(ValueError, match="graph g .*node a .*retries"):
+        build_graph_from_config(
+            graph_config("g", {
+                "nodes": {"a": {"fn": "a", "retries": -1}},
+                "edges": [["START", "a"]],
+            }),
+            "g", NODES, ROUTERS, Checkpointer(),
+        )
+
+
+def test_negative_retry_backoff_raises_value_error_with_node_context():
+    with pytest.raises(ValueError, match="graph g .*node a .*retry_backoff"):
+        build_graph_from_config(
+            graph_config("g", {
+                "nodes": {"a": {"fn": "a", "retry_backoff": -0.1}},
+                "edges": [["START", "a"]],
+            }),
+            "g", NODES, ROUTERS, Checkpointer(),
+        )
+
+
+def test_edges_must_be_list():
+    with pytest.raises(ValueError, match="graph g .*edges"):
+        build_graph_from_config(
+            graph_config("g", {
+                "nodes": {"a": {"fn": "a"}},
+                "edges": {"from": "START", "to": "a"},
+            }),
+            "g", NODES, ROUTERS, Checkpointer(),
+        )
+
+
+def test_conditional_edges_must_be_list():
+    with pytest.raises(ValueError, match="graph g .*conditional_edges"):
+        build_graph_from_config(
+            graph_config("g", {
+                "nodes": {"a": {"fn": "a"}},
+                "edges": [["START", "a"]],
+                "conditional_edges": {"from": "a", "router": "route_to_c"},
+            }),
+            "g", NODES, ROUTERS, Checkpointer(),
+        )
+
+
+@pytest.mark.parametrize("src", ["START", "END"])
+def test_conditional_edges_from_cannot_be_start_or_end(src):
+    with pytest.raises(ValueError, match="graph g .*conditional_edges.*from"):
+        build_graph_from_config(
+            graph_config("g", {
+                "nodes": {"a": {"fn": "a"}},
+                "edges": [["START", "a"]],
+                "conditional_edges": [{"from": src, "router": "route_to_c"}],
+            }),
+            "g", NODES, ROUTERS, Checkpointer(),
+        )
+
+
+def test_unknown_router_error_includes_graph_context():
+    with pytest.raises(ValueError, match="graph g .*未知 router.*missing"):
+        build_graph_from_config(
+            graph_config("g", {
+                "nodes": {"a": {"fn": "a"}},
+                "edges": [["START", "a"]],
+                "conditional_edges": [{"from": "a", "router": "missing"}],
+            }),
+            "g", NODES, ROUTERS, Checkpointer(),
+        )
+
+
 def test_validate_can_be_used_on_json_built_state_graph():
     config = graph_config("g", {
         "nodes": ["a", "b"],
