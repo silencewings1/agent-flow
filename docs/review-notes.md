@@ -565,3 +565,59 @@ def activity(self, key: str, fn: Callable[[], Any],
 - 问题 4：测试未验证 seq 递增（补充建议）
 
 推荐合入 master。
+
+---
+
+## CR 审查 — c8d276b restore py37 debugger and graph validation compatibility（2026-06-19）
+
+### 审查范围
+
+Commit: `c8d276b30a6128b27fc7a60d25454d4ffcd79522`
+
+改动文件：
+
+- `agentflow/nodes.py`：将 Python 3.8+ 才有的 `shlex.join(test_files)` 替换为 Python 3.7 可用的 `" ".join(shlex.quote(path) for path in test_files)`。
+- `agentflow/graph.py`：在 `_static_string_returns()` 中补充 `ast.Str` 分支，恢复 Python 3.7 下字符串 return 字面量提取能力。
+
+`git show --stat --oneline c8d276b`：
+
+- `agentflow/graph.py | 3 +++`
+- `agentflow/nodes.py | 2 +-`
+- 合计 2 files changed, 4 insertions(+), 1 deletion(-)
+
+`git show --check c8d276b`：无 whitespace / conflict marker 问题。
+
+### 测试结果
+
+- `source /Users/ospacer/.py37/bin/activate && PYTHONPATH=. python -m pytest test/ -q`：104 passed
+- 重点回归集 `test/test_debugger.py test/test_graph.py test/test_invariants.py -q`：30 passed
+
+### 重点审查结论
+
+1. Python 3.7 兼容性：PASS
+
+`shlex.quote` 在 Python 3.7 标准库中可用，替换后不再依赖 `shlex.join`。本地 py37 全量测试确认 Debugger 相关失败已恢复。
+
+2. Shell 参数 quoting 安全：PASS
+
+`test_files` 来自 `os.walk(workdir)` 后的相对路径，逐个用 `shlex.quote()` 处理后再拼成 shell command。对空格、引号、分号、命令替换等 shell metacharacter 可正确转义，未发现 shell 注入回归。现有代码仍使用 `shell=True`，长期更稳妥的形态是 argv 形式 `subprocess.run(["pytest", ...])`，但本次修复未扩大既有风险。
+
+3. 条件边 AST 分析：PASS
+
+Python 3.7 下字符串字面量节点是 `ast.Str`，新增分支能让 `route_ghost()` 的 `return "ghost"` 被识别，从而恢复未定义节点 warning。该分支位于 `walk()` 内，外层仍通过手动 `visit()` 跳过 `FunctionDef` / `AsyncFunctionDef` / `Lambda` 子树，因此不会重新引入“嵌套函数 return 被误提取”的误报。现有 `test_conditional_returns_nested_function_not_extracted` 已覆盖。
+
+4. Checkpoint / resume invariant：PASS
+
+本次只改 Debugger 命令字符串构造和 validate 静态 AST 提取，没有触碰 `CompiledGraph`、frontier、checkpoint 写入或 resume 逻辑。`test/test_invariants.py` 已随全量测试和重点测试通过。
+
+5. 测试提交情况：可接受
+
+本 commit 未新增测试，但两个回归均已被现有测试直接覆盖：`test_debugger.py` 覆盖 py37 Debugger 执行路径，`test_graph.py::test_conditional_returns_undefined_node_is_warning` 覆盖条件边返回未定义节点 warning。修复前这些用例失败，修复后全量通过，本次可接受。
+
+### Findings
+
+无阻塞 findings。
+
+### 最终结论
+
+PASS。`c8d276b` 修复目标明确、范围小，Python 3.7 全量测试通过，未发现影响 checkpoint/resume invariant 的回归。建议 PM 可进入合并确认流程。
