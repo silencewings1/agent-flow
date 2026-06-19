@@ -747,3 +747,45 @@ PASS。`603be83` 的 JSON 图配置化实现范围清晰，未引入动态代码
 ### 最终结论
 
 PASS。本次未提交 diff 修复目标明确，Python 3.7 和当前 `python3` 全量测试通过，demo 7 场景通过，未发现 P0/P1 阻塞问题，未发现 checkpoint/resume 回归或动态代码执行风险。
+
+---
+
+## CR 审查 — 未提交 diff：README.md 文档更新（2026-06-19）
+
+### 审查范围
+
+当前未提交 diff：
+
+- `README.md`
+
+### 轻量验证
+
+- `git diff -- README.md`
+- `rg -n "Python 3.8|5 个|reviewer|graph_config|test_graph_config|verify_py37|python3 demo.py" README.md`
+- `python3 -m pytest test/test_graph_config.py -q`
+
+### 审查结论
+
+1. Python 3.7+ / 7 demo / 当前测试命令：PASS
+
+README 已更新为明确支持 Python 3.7+，快速开始与“快速上手指南”都改为 `python demo.py`、`PYTHONPATH=. python -m pytest test/ -q`、`./scripts/verify_py37.sh` 这一套当前命令。`demo.py` 实际仍为 7 个场景，`python3 -m pytest test/test_graph_config.py -q` 也通过。
+
+2. 过时内容清理：PASS
+
+未在 README 中找到 `Python 3.8`、`5 个` 等旧表述；流水线描述也已从单一 reviewer 拓扑更新为 `ai_review` + `human_review` 分层。
+
+3. JSON 图配置说明：PASS
+
+README 对 `agentflow/graph_config.py` 和 `conf/graph_config.example.json` 的说明与实现一致：`graphs` 顶层、`nodes` 支持对象映射 + `fn`，也兼容 list / string / `handler`；节点和路由仅从显式 registry 解析；JSON 不会执行 `import` / `eval`。
+
+4. 文档格式：PASS
+
+本次 README 结构、标题层级、代码块和列表格式均无明显破损或排版错误。
+
+### Findings
+
+无 findings。
+
+### 最终结论
+
+PASS。README.md 当前 diff 与仓库现状一致，未发现与 Python 3.7+、7 个 demo、JSON graph config、`ai_review` / `human_review` 拓扑或测试命令相关的明显问题。

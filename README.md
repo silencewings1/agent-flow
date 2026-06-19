@@ -1,8 +1,8 @@
 # agentflow —— 最小 DAG 编排内核
 
-一个零三方依赖、纯标准库的 Python 实现，把[调研报告](docs/agent-flow-research-report.md)的核心结论落成可运行代码：
+一个零三方依赖、纯标准库、支持 Python 3.7+ 的实现，把[调研报告](docs/agent-flow-research-report.md)的核心结论落成可运行代码：
 
-> **「AgentMesh 式角色划分（Planner/Coder/Debugger/Reviewer） × LangGraph 式 DAG 编排 + checkpointer」** —— 报告指出这是目前少有成熟产品占据的结合点。
+> **「AgentMesh 式角色划分（Planner/Coder/Debugger/AI Review/Human Review） × LangGraph 式 DAG 编排 + checkpointer」** —— 报告指出这是目前少有成熟产品占据的结合点。
 
 ## 设计映射（报告结论 → 代码）
 
@@ -28,41 +28,50 @@ agentflow/
   interrupt.py   # Interrupt 异常 + Command + interrupt() 原语
   checkpoint.py  # 事件溯源式 SQLite checkpointer（含 activity 缓存 + tool_calls 表）
   graph.py       # StateGraph 定义（含 validate + to_mermaid）+ CompiledGraph 超步执行器
+  graph_config.py # 从 JSON 配置构建 StateGraph / CompiledGraph
   llm.py         # 每节点 LLM 配置层（mock / Anthropic / OpenAI）
-  nodes.py       # AgentMesh 四节点（LLM 可配置）+ 条件路由函数
+  nodes.py       # planner/coder/debugger/ai_review/human_review + 条件路由函数
+  plan.py        # 规划结构与兼容转换
+  tools.py       # 受控命令执行工具
 conf/
-  llm_config.example.json # 每节点 LLM 配置示例
+  llm_config.example.json   # 每节点 LLM 配置示例
+  graph_config.example.json # pipeline / parallel / retry / timetravel / real_coder / real_debugger 图配置
 docs/
   agent-flow-research-report.md  # 调研报告
   agent-flow-analysis-report.md  # 功能分析报告
 test/
-  test_invariants.py # 核心不变量测试（不重跑 / 回环终止）
-  test_activity.py   # Activity 缓存 + 工具调用持久化 测试
-  test_graph.py      # 图校验 + Mermaid 导出 测试
-demo.py              # 5 个可运行场景
+  test_invariants.py   # 核心不变量测试（不重跑 / 回环终止）
+  test_activity.py     # Activity 缓存 + 工具调用持久化测试
+  test_graph.py        # 图校验 + Mermaid 导出测试
+  test_graph_config.py # JSON 图配置测试
+  test_planner.py / test_coder.py / test_debugger.py / test_review.py
+  test_tools.py / test_py37_compat.py
+demo.py              # 7 个可运行场景
 ```
 
 ## 快速开始
 
 ```bash
-python3 demo.py                 # 跑 5 个演示场景
-PYTHONPATH=. python3 test/test_invariants.py  # 跑核心不变量测试
-PYTHONPATH=. python3 test/test_activity.py    # 跑 activity 缓存 + 工具调用测试
-PYTHONPATH=. python3 test/test_graph.py       # 跑图校验 + Mermaid 导出测试
+source /Users/ospacer/.py37/bin/activate
+
+python demo.py                                      # 跑 7 个演示场景
+PYTHONPATH=. python -m pytest test/ -q              # 跑全部测试
+PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh
 ```
 
-无需安装任何依赖（Python 3.8+ 标准库即可）。
+项目代码无三方运行依赖，支持 Python 3.7+ 标准库。
 
 ## 流水线拓扑（demo 场景 1）
 
 ```
-START → planner → coder → debugger ──(测试通过)──→ reviewer ──(合并)──→ END
-                    ↑           │                      │
-                    └─(测试失败)─┘          (打回)───────┘
+START → planner → coder → debugger ──(测试通过)──→ ai_review → human_review ──(批准)──→ END
+                    ↑           │                                      │
+                    └─(测试失败)─┘                         (打回)───────┘
 ```
 
-- `debugger` 用条件边：测试失败回退 `coder`（**回环**），通过则进 `reviewer`；
-- `reviewer` 用 `interrupt` 请求人工评审 → 暂停存盘 → `Command(resume={"approve": ...})` 恢复；
+- `debugger` 用条件边：测试失败回退 `coder`（**回环**），通过则进 `ai_review`；
+- `ai_review` 只产出机器评审意见，不触发中断；
+- `human_review` 用 `interrupt` 请求人工评审 → 暂停存盘 → `Command(resume={"approve": ...})` 恢复；
 - 打回也回退 `coder`，合并则到 `END`。
 
 ## 最小用法
@@ -151,6 +160,40 @@ print(g.to_mermaid())
 #     planner --> coder
 ```
 
+## JSON 图配置
+
+图结构可从 JSON 声明式配置构建，示例见 [conf/graph_config.example.json](conf/graph_config.example.json)。入口 API：
+
+```python
+from agentflow import Checkpointer, build_graph_from_config, load_graph_config
+from agentflow import nodes as N
+
+config = load_graph_config("conf/graph_config.example.json")
+app = build_graph_from_config(
+    config,
+    "pipeline",
+    node_registry={
+        "planner": N.planner,
+        "coder": N.coder,
+        "debugger": N.debugger,
+        "ai_review": N.ai_review,
+        "human_review": N.human_review,
+    },
+    router_registry={
+        "route_after_debug": N.route_after_debug,
+        "route_after_human_review": N.route_after_human_review,
+    },
+    checkpointer=Checkpointer("wf.db"),
+)
+```
+
+- 顶层字段是 `graphs`；每个 graph 支持 `max_steps`、`reducers`、`nodes`、`edges`、`conditional_edges`。
+- `reducers` 当前支持 `"append"` / `"overwrite"`；未声明的 state key 默认覆盖。
+- `edges` / router 返回值里的 `"START"`、`"END"` 会映射到内置 `START` / `END` sentinel。
+- `node` 和 `router` 只从调用方显式传入的 registry 白名单解析；JSON 不允许任意 `import` / `eval`。
+- `nodes` 支持对象映射 + `fn`，也兼容 list / string / `handler`：`"planner"`、`["planner", "coder"]`、`{"name": "worker", "handler": "flaky"}`、`{"worker": {"fn": "flaky", "retries": 2}}` 都是合法形式。
+- 入口 API 是 `load_graph_config()` + `build_graph_from_config()`；如需先做静态检查，也可先取 `build_state_graph_from_config()` 再 `validate()` / `to_mermaid()`。
+
 ## 接入真实 LLM：每节点独立配置
 
 LLM 接入全部通过**配置文件**（JSON），每个节点可单独指定 provider、模型与参数。所有厂商（包括 Anthropic、OpenAI、火山方舟等）均通过配置文件的 `providers` 字段声明，代码中不硬编码任何厂商。未配置的节点退化为 mock，demo 无需任何 key 即可离线运行。实现见 [llm.py](agentflow/llm.py)，零三方依赖（标准库 `urllib` 直连 HTTP API）。
@@ -186,6 +229,7 @@ LLM 接入全部通过**配置文件**（JSON），每个节点可单独指定 p
 - **`providers`**：声明项目支持哪些厂商。`protocol` 字段决定 HTTP API 格式——`"anthropic"`（Claude Messages API）或 `"openai"`（OpenAI Chat Completions，兼容火山方舟等）。
 - **`defaults`**：所有节点的默认配置。
 - **`nodes`**：每个节点的独立配置，优先级 `provider 协议默认 ← defaults ← nodes[name]`。
+- 当前 `ai_review` 节点使用 `reviewer` 这一路 LLM 配置名；它不是图拓扑里的单一 review 节点，人工评审仍由 `human_review` 负责。
 - 下划线开头的键（如 `_comment`）会被忽略，可用作注释。
 
 ### 在节点里调用
@@ -225,6 +269,23 @@ N.set_registry(reg)                        # 流水线节点据此调用对应 p
 - **BFS 用 deque 而非 list.pop(0)**
 - **to_mermaid() 输出包含所有节点和边**
 
+`test/test_graph_config.py` 验证 JSON 图配置：
+- **load_graph_config** 正确读取 JSON；
+- **build_graph_from_config** 支持 `START` / `END` alias、append reducer、条件边 router、节点 retry；
+- **nodes** 支持对象映射 + `fn`，也兼容 list / string / `handler`；
+- **node/router/reducer** 只能来自显式 registry，未知名称会抛 `ValueError`。
+
+`test/test_planner.py`、`test/test_coder.py`、`test/test_debugger.py`、`test/test_review.py`、`test/test_tools.py` 覆盖当前节点能力：
+- planner 结构化任务拆分与 mock fallback；
+- coder 写文件、兼容旧 state["tasks"]；
+- debugger 的 pytest 回环与无 workdir 兼容路径；
+- `ai_review` / `human_review` 分层，中断只发生在 `human_review`；
+- 受控命令执行白名单与超时/失败路径。
+
+`demo.py` 覆盖 7 个场景：流水线 HITL、并行扇出、节点重试、时间旅行、每节点 LLM 配置、真实 Coder 写文件、真实 Debugger pytest 回环。
+
+`PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh` 覆盖 Python 3.7 语法、导入和测试兼容性。
+
 ## 边界与可扩展点
 
 - **并发模型**：用线程池（适合 I/O 密集的 LLM 调用）；CPU 密集需换进程池。
@@ -263,15 +324,17 @@ API Key 只从环境变量读取，不落磁盘。
 
 ```bash
 # 跑全部演示场景（无 Key 也能跑，LLM 调用自动降级为 mock）
-python3 demo.py
+source /Users/ospacer/.py37/bin/activate
+python demo.py
 
 # 跑所有测试
-PYTHONPATH=. python3 test/test_invariants.py   # 核心不变量
-PYTHONPATH=. python3 test/test_activity.py     # Activity 缓存 + 工具调用
-PYTHONPATH=. python3 test/test_graph.py        # 图校验 + Mermaid
+PYTHONPATH=. python -m pytest test/ -q
+
+# Python 3.7 兼容性全量验证
+PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh
 ```
 
-**无需安装任何依赖**，Python 3.8+ 标准库即可。
+**项目代码无三方运行依赖**，Python 3.7+ 标准库即可。
 
 ### 接入其他 OpenAI 兼容厂商
 
