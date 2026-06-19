@@ -833,3 +833,55 @@ PASS。README.md 当前 diff 与仓库现状一致，未发现与 Python 3.7+、
 ### 最终结论
 
 PASS。本轮 diff 是针对 P2 flaky 的最小修复，`duration_ms >= 0` 符合 tool_calls 非负耗时语义且仍能捕获负数异常；文档状态追加准确，未破坏历史计划。未发现 P0/P1 阻塞问题。
+
+---
+
+## CR 审查 — 当前 diff：graph_config canonical schema 最终复验（2026-06-19）
+
+### 审查范围
+
+当前未提交 diff：
+
+- `README.md`
+- `conf/graph_config.example.json`
+- `docs/plan.md`
+
+目标：确认示例 graph config 全量切换到 canonical `nodes` 对象映射 + `fn` 写法，README 不再展示或推荐旧 schema，plan 状态准确；同时移除本轮重复 CR 记录，仅保留本最终复验节。
+
+### 测试结果
+
+- `python3 -m json.tool conf/graph_config.example.json >/tmp/graph_config_check.json`：PASS。
+- `/Users/ospacer/.py37/bin/python -c 'import json; json.load(open("conf/graph_config.example.json")); print("json ok")'`：PASS。
+- `rg -n '"nodes"\s*:\s*\[|"handler"|list / string|也兼容|兼容 list|兼容旧配置' README.md conf/graph_config.example.json docs/plan.md`：PASS。仅命中 `docs/plan.md` 中“示例中不再保留 list / string / handler 兼容写法”的状态描述，未发现旧 schema 示例残留。
+- `git diff --check`：PASS，无空白错误。
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /Users/ospacer/.py37/bin/python -m pytest test/ -q -p no:cacheprovider`：113 passed。
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /Users/ospacer/.py37/bin/python demo.py`：PASS，7 个 demo 场景全部执行完毕。
+- `PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh`：PASS。
+
+### 重点审查结论
+
+1. `conf/graph_config.example.json` canonical 写法：PASS
+
+6 个 graph 的 `nodes` 均为对象映射，节点 spec 均使用 `fn`。`retry.flaky` 保留 `retries: 2`，`real_debugger.nodes.coder` 使用 `{"fn": "dummy_coder_fix_test"}`，符合本轮目标。
+
+2. README 同步：PASS
+
+README 的 JSON 图配置说明已改为示例配置统一采用对象映射 + `fn` 的规范写法，并给出带重试节点的 canonical 示例；未继续展示或推荐 list/string/handler 旧写法。实现层仍保留旧 schema 兼容能力，但当前文档变更范围是示例与推荐写法，二者不冲突。
+
+3. `docs/plan.md` 状态：PASS
+
+plan 追加的完成状态与当前 diff 一致：记录 example config 已全量切换、README 已同步、示例不再保留旧 schema 写法；未发现夸大完成范围或与实际文件不一致的问题。
+
+4. `docs/review-notes.md` 当前轮记录：PASS
+
+本轮重复追加的 graph_config CR 记录已合并为当前最终复验节，避免 PM/Dev 后续读取时重复判断同一轮结论。
+
+### Findings
+
+- P0：无。
+- P1：无。
+- P2：无。
+
+### 最终结论
+
+PASS。当前 diff 满足 graph_config 示例切换为 canonical `nodes` 对象映射 + `fn`、README/plan 同步、无旧 schema 示例残留的审查要求；Python 3.7 全量测试与 demo 均通过，未发现阻塞问题。

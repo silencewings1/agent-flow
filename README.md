@@ -191,7 +191,7 @@ app = build_graph_from_config(
 - `reducers` 当前支持 `"append"` / `"overwrite"`；未声明的 state key 默认覆盖。
 - `edges` / router 返回值里的 `"START"`、`"END"` 会映射到内置 `START` / `END` sentinel。
 - `node` 和 `router` 只从调用方显式传入的 registry 白名单解析；JSON 不允许任意 `import` / `eval`。
-- `nodes` 支持对象映射 + `fn`，也兼容 list / string / `handler`：`"planner"`、`["planner", "coder"]`、`{"name": "worker", "handler": "flaky"}`、`{"worker": {"fn": "flaky", "retries": 2}}` 都是合法形式。
+- 示例配置统一采用对象映射 + `fn` 的规范写法：`"nodes": {"planner": {"fn": "planner"}, "coder": {"fn": "dummy_coder_fix_test"}}`；带重试的节点写作 `"flaky": {"fn": "flaky", "retries": 2}`。
 - 入口 API 是 `load_graph_config()` + `build_graph_from_config()`；如需先做静态检查，也可先取 `build_state_graph_from_config()` 再 `validate()` / `to_mermaid()`。
 
 ## 接入真实 LLM：每节点独立配置
@@ -272,7 +272,7 @@ N.set_registry(reg)                        # 流水线节点据此调用对应 p
 `test/test_graph_config.py` 验证 JSON 图配置：
 - **load_graph_config** 正确读取 JSON；
 - **build_graph_from_config** 支持 `START` / `END` alias、append reducer、条件边 router、节点 retry；
-- **nodes** 支持对象映射 + `fn`，也兼容 list / string / `handler`；
+- **nodes** 使用对象映射 + `fn` 的规范写法；
 - **node/router/reducer** 只能来自显式 registry，未知名称会抛 `ValueError`。
 
 `test/test_planner.py`、`test/test_coder.py`、`test/test_debugger.py`、`test/test_review.py`、`test/test_tools.py` 覆盖当前节点能力：
