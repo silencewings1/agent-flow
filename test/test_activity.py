@@ -245,7 +245,7 @@ def test_tool_calls_logged():
     assert rec["tool_name"] == "x"
     assert rec["activity_key"] == "x"
     assert rec["status"] == "success"
-    assert rec["duration_ms"] > 0
+    assert rec["duration_ms"] >= 0
     assert rec["seq"] == 0
     assert rec["step"] == 1
     print(f"✅ test_tool_calls_logged 通过 (duration_ms={rec['duration_ms']:.2f})")

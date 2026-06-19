@@ -192,3 +192,9 @@ graph TD
 3. P0-1: 中断恢复场景下 LLM 调用次数不增加
 4. P0-2: 工具调用记录可查询、可聚合
 5. P0-3: 非法图编译前就报错，合法图无额外告警
+
+## 当前完成状态（2026-06-19 进度）
+
+- P0/P1 修复、JSON 图配置、README 更新已完成。
+- 本轮 P2 flaky 修复已完成，`test/test_activity.py` 中 activity duration 断言已调整为允许 0ms 的合法极快调用耗时，自测验证通过。
+- 当前剩余建议：优化 `graph_config` example schema；长期 P2/设计项继续按后续规划处理。
