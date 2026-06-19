@@ -392,6 +392,9 @@ class StateGraph:
             if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
                 literals.add(expr.value)
                 return
+            if isinstance(expr, ast.Str):
+                literals.add(expr.s)
+                return
             if isinstance(expr, (ast.IfExp, ast.BoolOp)):
                 # 三元 / and-or：所有分支都可能是返回值
                 if isinstance(expr, ast.IfExp):

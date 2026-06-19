@@ -301,7 +301,7 @@ def debugger(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
             "test_report": report,
             "log": [f"[Debugger] pytest 不可用，测试 v{version}: {'通过' if passed else '失败 → 退回 Coder'}"],
         }
-    test_files_arg = shlex.join(test_files)
+    test_files_arg = " ".join(shlex.quote(path) for path in test_files)
     cmd = f"pytest {test_files_arg} --tb=short -q"
 
     # CR 2026-06-17 1.2: 虽然不用 ToolRuntime.run_cmd，但手动复用其安全检查
