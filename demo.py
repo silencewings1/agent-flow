@@ -12,15 +12,15 @@
 """
 from __future__ import annotations
 
+import os
+
 from agentflow import (
     Checkpointer,
     Command,
     LLMRegistry,
-    StateGraph,
-    StateSchema,
-    START,
     END,
-    append_reducer,
+    build_graph_from_config,
+    load_graph_config,
 )
 from agentflow.nodes import (
     coder,
@@ -33,23 +33,93 @@ from agentflow.nodes import (
 )
 
 
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "conf", "graph_config.example.json")
+
+
+def split(state, ctx):
+    return {"log": ["[split] 扇出 3 个并行子任务"]}
+
+
+def worker_w1(state, ctx):
+    return {"artifacts": ["w1 产物"], "log": ["[w1] 完成"]}
+
+
+def worker_w2(state, ctx):
+    return {"artifacts": ["w2 产物"], "log": ["[w2] 完成"]}
+
+
+def worker_w3(state, ctx):
+    return {"artifacts": ["w3 产物"], "log": ["[w3] 完成"]}
+
+
+def join(state, ctx):
+    return {"log": [f"[join] 汇聚 {len(state['artifacts'])} 个产物: {state['artifacts']}"]}
+
+
+def flaky(state, ctx):
+    # 前两次 attempt 抛错，第三次成功
+    if ctx.attempt < 2:
+        raise RuntimeError(f"第 {ctx.attempt} 次尝试失败（模拟瞬时错误）")
+    return {"log": [f"[flaky] 第 {ctx.attempt} 次尝试成功"]}
+
+
+def dummy_coder_fix_test(state, ctx):
+    v = state.get("code_version", 0) + 1
+    workdir = state.get("workdir", "")
+    if workdir:
+        # 修复测试文件：把 assert fib(5) == 99 改成 assert fib(5) == 5
+        test_file = os.path.join(workdir, "src", "test_fib.py")
+        if os.path.isfile(test_file):
+            with open(test_file, "r", encoding="utf-8") as f:
+                content = f.read()
+            content = content.replace("assert fib(5) == 99", "assert fib(5) == 5")
+            with open(test_file, "w", encoding="utf-8") as f:
+                f.write(content)
+    return {"code_version": v, "log": [f"[Coder] 修复 v{v}"]}
+
+
+def route_after_debug_to_end(state):
+    return END if state.get("tests_passed") else "coder"
+
+
+def demo_node_registry():
+    return {
+        "planner": planner,
+        "coder": coder,
+        "debugger": debugger,
+        "ai_review": ai_review,
+        "human_review": human_review,
+        "split": split,
+        "w1": worker_w1,
+        "w2": worker_w2,
+        "w3": worker_w3,
+        "join": join,
+        "flaky": flaky,
+        "dummy_coder_fix_test": dummy_coder_fix_test,
+    }
+
+
+def demo_router_registry():
+    return {
+        "route_after_debug": route_after_debug,
+        "route_after_human_review": route_after_human_review,
+        "route_after_debug_to_end": route_after_debug_to_end,
+    }
+
+
+def build_configured_graph(graph_name: str, checkpointer: Checkpointer):
+    return build_graph_from_config(
+        load_graph_config(CONFIG_PATH),
+        graph_name,
+        demo_node_registry(),
+        demo_router_registry(),
+        checkpointer,
+    )
+
+
 def build_pipeline(checkpointer: Checkpointer):
     """需求 → 分解 → 开发 →(测试回环)→ AI 评审 → 人工审批(人在回路) → 完成。"""
-    schema = StateSchema(reducers={"log": append_reducer})
-    g = StateGraph(schema, max_steps=30)
-    g.add_node("planner", planner)
-    g.add_node("coder", coder)
-    g.add_node("debugger", debugger)
-    g.add_node("ai_review", ai_review)
-    g.add_node("human_review", human_review)
-
-    g.add_edge(START, "planner")
-    g.add_edge("planner", "coder")
-    g.add_edge("coder", "debugger")
-    g.add_conditional_edges("debugger", route_after_debug)        # 失败→coder，通过→ai_review
-    g.add_edge("ai_review", "human_review")                       # AI 评审后等待人工
-    g.add_conditional_edges("human_review", route_after_human_review)  # 打回→coder，合并→END
-    return g.compile(checkpointer)
+    return build_configured_graph("pipeline", checkpointer)
 
 
 def banner(title: str) -> None:
@@ -93,32 +163,8 @@ def scenario_pipeline() -> None:
 def scenario_parallel() -> None:
     banner("场景 2 — 并行扇出：同一 super-step 内多节点并发")
     cp = Checkpointer()
-    schema = StateSchema(reducers={"log": append_reducer, "artifacts": append_reducer})
-    g = StateGraph(schema)
-
-    def split(state, ctx):
-        return {"log": ["[split] 扇出 3 个并行子任务"]}
-
-    def make_worker(name):
-        def worker(state, ctx):
-            return {"artifacts": [f"{name} 产物"], "log": [f"[{name}] 完成"]}
-        return worker
-
-    def join(state, ctx):
-        return {"log": [f"[join] 汇聚 {len(state['artifacts'])} 个产物: {state['artifacts']}"]}
-
-    g.add_node("split", split)
-    for w in ("w1", "w2", "w3"):
-        g.add_node(w, make_worker(w))
-    g.add_node("join", join)
-
-    g.add_edge(START, "split")
-    for w in ("w1", "w2", "w3"):          # split 扇出到 3 个 worker（同一 super-step 并行）
-        g.add_edge("split", w)
-        g.add_edge(w, "join")             # 3 个 worker 汇聚到 join
-    g.add_edge("join", END)
-
-    res = g.compile(cp).invoke({"artifacts": []}, thread_id="fanout")
+    app = build_configured_graph("parallel", cp)
+    res = app.invoke({"artifacts": []}, thread_id="fanout")
     print(f"\n→ status={res.status}, step={res.step}（split/3并行/join = 3 个 super-step）")
     for line in res.state["log"]:
         print(f"    {line}")
@@ -127,20 +173,8 @@ def scenario_parallel() -> None:
 def scenario_retry() -> None:
     banner("场景 3 — 节点错误重试")
     cp = Checkpointer()
-    schema = StateSchema(reducers={"log": append_reducer})
-    g = StateGraph(schema)
-
-    def flaky(state, ctx):
-        # 前两次 attempt 抛错，第三次成功
-        if ctx.attempt < 2:
-            raise RuntimeError(f"第 {ctx.attempt} 次尝试失败（模拟瞬时错误）")
-        return {"log": [f"[flaky] 第 {ctx.attempt} 次尝试成功"]}
-
-    g.add_node("flaky", flaky, retries=2)
-    g.add_edge(START, "flaky")
-    g.add_edge("flaky", END)
-
-    res = g.compile(cp).invoke({}, thread_id="retry")
+    app = build_configured_graph("retry", cp)
+    res = app.invoke({}, thread_id="retry")
     print(f"\n→ status={res.status}")
     for line in res.state["log"]:
         print(f"    {line}")
@@ -153,7 +187,7 @@ def scenario_retry() -> None:
 def scenario_timetravel() -> None:
     banner("场景 4 — 时间旅行：checkpoint 历史 + 事件日志")
     cp = Checkpointer()
-    app = build_pipeline(cp)
+    app = build_configured_graph("timetravel", cp)
     tid = "tt"
     app.invoke({"requirement": "做个 CLI 工具", "pass_at_version": 2}, thread_id=tid)
     print("\n  checkpoint 历史(每个 super-step 一份):")
@@ -212,14 +246,7 @@ def scenario_real_coder() -> None:
     print(f"\n  workdir: {workdir}")
 
     cp = Checkpointer()
-    schema = StateSchema(reducers={"log": append_reducer, "artifacts": append_reducer})
-    g = StateGraph(schema, max_steps=10)
-    g.add_node("planner", planner)
-    g.add_node("coder", coder)
-    g.add_edge(START, "planner")
-    g.add_edge("planner", "coder")
-    g.add_edge("coder", END)
-    app = g.compile(cp)
+    app = build_configured_graph("real_coder", cp)
 
     init = {
         "requirement": "实现 fibonacci 函数, 写单元测试",
@@ -268,32 +295,7 @@ def scenario_real_debugger() -> None:
                 "def test_fib_5():\n    assert fib(5) == 99  # 故意写错\n")
 
     cp = Checkpointer()
-    schema = StateSchema(reducers={"log": append_reducer, "artifacts": append_reducer})
-    g = StateGraph(schema, max_steps=10)
-    g.add_node("debugger", debugger)
-    g.add_edge(START, "debugger")
-    # 本地图没有 ai_review 节点：测试通过直接结束，不沿用全局 route_after_debug
-    def route_after_debug_to_end(state):
-        return END if state.get("tests_passed") else "coder"
-    g.add_conditional_edges("debugger", route_after_debug_to_end)
-    # 加一个 dummy coder（修复测试文件，实现真正的 fix-and-retest 回环）
-    def dummy_coder(state, ctx):
-        v = state.get("code_version", 0) + 1
-        import os as _os_demo
-        workdir = state.get("workdir", "")
-        if workdir:
-            # 修复测试文件：把 assert fib(5) == 99 改成 assert fib(5) == 5
-            test_file = _os_demo.path.join(workdir, "src", "test_fib.py")
-            if _os_demo.path.isfile(test_file):
-                with open(test_file, "r") as f:
-                    content = f.read()
-                content = content.replace("assert fib(5) == 99", "assert fib(5) == 5")
-                with open(test_file, "w") as f:
-                    f.write(content)
-        return {"code_version": v, "log": [f"[Coder] 修复 v{v}"]}
-    g.add_node("coder", dummy_coder)
-    g.add_edge("coder", "debugger")  # 回环：coder 修完后 debugger 再测
-    app = g.compile(cp)
+    app = build_configured_graph("real_debugger", cp)
 
     init = {
         "tasks": ["t1"],

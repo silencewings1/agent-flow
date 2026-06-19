@@ -1,0 +1,124 @@
+{
+  "graphs": {
+    "pipeline": {
+      "max_steps": 30,
+      "reducers": {
+        "log": "append"
+      },
+      "nodes": [
+        "planner",
+        "coder",
+        "debugger",
+        "ai_review",
+        "human_review"
+      ],
+      "edges": [
+        ["START", "planner"],
+        ["planner", "coder"],
+        ["coder", "debugger"],
+        ["ai_review", "human_review"]
+      ],
+      "conditional_edges": [
+        {"from": "debugger", "router": "route_after_debug"},
+        {"from": "human_review", "router": "route_after_human_review"}
+      ]
+    },
+    "parallel": {
+      "max_steps": 10,
+      "reducers": {
+        "log": "append",
+        "artifacts": "append"
+      },
+      "nodes": [
+        "split",
+        "w1",
+        "w2",
+        "w3",
+        "join"
+      ],
+      "edges": [
+        ["START", "split"],
+        ["split", "w1"],
+        ["split", "w2"],
+        ["split", "w3"],
+        ["w1", "join"],
+        ["w2", "join"],
+        ["w3", "join"],
+        ["join", "END"]
+      ],
+      "conditional_edges": []
+    },
+    "retry": {
+      "max_steps": 10,
+      "reducers": {
+        "log": "append"
+      },
+      "nodes": [
+        {"name": "flaky", "handler": "flaky", "retries": 2}
+      ],
+      "edges": [
+        ["START", "flaky"],
+        ["flaky", "END"]
+      ],
+      "conditional_edges": []
+    },
+    "timetravel": {
+      "max_steps": 30,
+      "reducers": {
+        "log": "append"
+      },
+      "nodes": [
+        "planner",
+        "coder",
+        "debugger",
+        "ai_review",
+        "human_review"
+      ],
+      "edges": [
+        ["START", "planner"],
+        ["planner", "coder"],
+        ["coder", "debugger"],
+        ["ai_review", "human_review"]
+      ],
+      "conditional_edges": [
+        {"from": "debugger", "router": "route_after_debug"},
+        {"from": "human_review", "router": "route_after_human_review"}
+      ]
+    },
+    "real_coder": {
+      "max_steps": 10,
+      "reducers": {
+        "log": "append",
+        "artifacts": "append"
+      },
+      "nodes": [
+        "planner",
+        "coder"
+      ],
+      "edges": [
+        ["START", "planner"],
+        ["planner", "coder"],
+        ["coder", "END"]
+      ],
+      "conditional_edges": []
+    },
+    "real_debugger": {
+      "max_steps": 10,
+      "reducers": {
+        "log": "append",
+        "artifacts": "append"
+      },
+      "nodes": [
+        "debugger",
+        {"name": "coder", "handler": "dummy_coder_fix_test"}
+      ],
+      "edges": [
+        ["START", "debugger"],
+        ["coder", "debugger"]
+      ],
+      "conditional_edges": [
+        {"from": "debugger", "router": "route_after_debug_to_end"}
+      ]
+    }
+  }
+}
