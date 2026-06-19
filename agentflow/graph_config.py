@@ -79,11 +79,13 @@ def build_state_graph_from_config(
     max_steps = _parse_positive_int(spec.get("max_steps", 50), graph_name, "max_steps")
     g = StateGraph(schema, max_steps=max_steps)
 
+    declared_nodes: set = set()
     for node_spec in _iter_node_specs(spec.get("nodes", []), graph_name):
         node = _parse_node(node_spec, graph_name)
         handler_name = node["handler"]
         if handler_name not in node_registry:
             raise ValueError(f"graph {graph_name} 未知 node: {handler_name}")
+        declared_nodes.add(node["name"])
         g.add_node(
             node["name"],
             node_registry[handler_name],
@@ -106,11 +108,17 @@ def build_state_graph_from_config(
         _parse_list_field(spec, graph_name, "conditional_edges")
     ):
         cond = _parse_conditional_edge(cond_spec, graph_name, index)
+        cond_src = cond["from"]
+        if cond_src not in declared_nodes:
+            raise ValueError(
+                f"graph {graph_name} conditional_edges[{index}] "
+                f"引用了未定义节点: {cond_src}"
+            )
         router_name = cond["router"]
         if router_name not in router_registry:
             raise ValueError(f"graph {graph_name} 未知 router: {router_name}")
         g.add_conditional_edges(
-            _alias_node(cond["from"]),
+            _alias_node(cond_src),
             _wrap_router_aliases(router_registry[router_name]),
         )
 

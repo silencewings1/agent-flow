@@ -253,6 +253,7 @@ class StateGraph:
         referenced = set(self._entry)
         for outs in self._edges.values():
             referenced.update(outs)
+        referenced.update(self._cond.keys())
         for n in referenced:
             if n != END and n not in self._nodes:
                 raise ValueError(f"边引用了未定义的节点：{n}")
@@ -279,8 +280,11 @@ class StateGraph:
                     issues.append(ValidationIssue(
                         "error", f"入口引用了未定义节点: {n}"))
 
-        # 2) 条件边函数必须可调用
+        # 2) 条件边：源节点必须已定义，router 必须可调用
         for src, router in self._cond.items():
+            if src != END and src not in self._nodes:
+                issues.append(ValidationIssue(
+                    "error", f"条件边引用了未定义节点: {src}", node=src))
             if not callable(router):
                 issues.append(ValidationIssue(
                     "error", f"条件边函数不可调用: {repr(router)}", node=src))

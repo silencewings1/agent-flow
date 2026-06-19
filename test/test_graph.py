@@ -282,6 +282,25 @@ def test_conditional_returns_nested_function_not_extracted():
     print("✅ test_conditional_returns_nested_function_not_extracted")
 
 
+def test_conditional_src_undefined_node_is_error():
+    """add_conditional_edges("ghost", ...) 且 ghost 未注册时，validate() 应报 error。"""
+    g = StateGraph()
+    g.add_node("a", _noop)
+    g.add_edge(START, "a")
+    g.add_conditional_edges("ghost", route_to_b)  # 源节点 ghost 未注册
+    issues = g.validate()
+    errs = [i for i in issues if i.level == "error"]
+    assert any("ghost" in i.message for i in errs), \
+        [str(i) for i in errs]
+    # compile() 也应抛 ValueError
+    try:
+        g.compile()
+        assert False, "compile() 应抛 ValueError"
+    except ValueError as e:
+        assert "ghost" in str(e)
+    print("✅ test_conditional_src_undefined_node_is_error")
+
+
 # ============================================================
 # 7) to_mermaid()
 # ============================================================

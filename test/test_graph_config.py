@@ -317,3 +317,38 @@ def test_validate_can_be_used_on_json_built_state_graph():
     issues = g.validate()
 
     assert any(i.level == "error" and i.node == "b" for i in issues)
+
+
+def test_conditional_edge_from_undefined_node_raises_value_error():
+    with pytest.raises(ValueError, match="conditional_edges.*未定义节点.*ghost"):
+        build_graph_from_config(
+            graph_config("g", {
+                "nodes": {"a": {"fn": "a"}},
+                "edges": [["START", "a"]],
+                "conditional_edges": [{"from": "ghost", "router": "route_to_c"}],
+            }),
+            "g", NODES, ROUTERS, Checkpointer(),
+        )
+
+
+def test_conditional_edge_from_handler_name_not_node_name_raises():
+    with pytest.raises(ValueError, match="conditional_edges.*未定义节点"):
+        build_graph_from_config(
+            graph_config("g", {
+                "nodes": {"my_node": {"fn": "a"}},
+                "edges": [["START", "my_node"]],
+                "conditional_edges": [{"from": "a", "router": "route_to_c"}],
+            }),
+            "g", NODES, ROUTERS, Checkpointer(),
+        )
+
+
+def test_conditional_edge_from_empty_nodes_list_raises():
+    with pytest.raises(ValueError, match="conditional_edges.*未定义节点"):
+        build_graph_from_config(
+            graph_config("g", {
+                "nodes": [],
+                "conditional_edges": [{"from": "a", "router": "route_to_c"}],
+            }),
+            "g", NODES, ROUTERS, Checkpointer(),
+        )

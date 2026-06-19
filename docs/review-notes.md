@@ -936,3 +936,127 @@ canonical `nodes` 对象映射现在要求每个 node spec 是对象且显式配
 ### 最终结论
 
 PASS。本轮 diff 满足 graph_config validation/error enhancement 的审查要求，未发现阻塞问题；CR 仅追加了本节 `docs/review-notes.md` 记录，未修改实现代码。
+
+---
+
+## CR 审查 — 对抗性 Fuzz：graph_config.py + graph.py validate/compile（2026-06-19）
+
+### 审查范围
+
+已提交代码的对抗性 fuzz testing，目标：发现现有测试未覆盖的边界情况或逻辑缺陷。
+
+重点文件：
+- `agentflow/graph_config.py`（283 行）
+- `agentflow/graph.py` — `validate()` / `compile()` / `add_conditional_edges()`
+
+### 测试方法
+
+使用 Python 脚本构造 37+ 个边界输入，调用 `build_state_graph_from_config()` / `build_graph_from_config()` / `StateGraph` 直接 API，观察是否正确报错或行为合理。
+
+### 发现的问题
+
+#### 问题 1（P1）：`conditional_edges.from` 不校验源节点是否已声明
+
+**位置**：`agentflow/graph_config.py:183-197` — `_parse_conditional_edge()`
+
+**复现**：
+```python
+config = {"graphs": {"g": {
+    "nodes": {"a": {"fn": "a"}},
+    "edges": [["START", "a"]],
+    "conditional_edges": [{"from": "ghost", "router": "r"}],  # ghost 未声明
+}}}
+g = build_state_graph_from_config(config, "g", NODES, ROUTERS)
+g.validate()  # → 0 errors!
+g.compile()   # → OK，无报错
+```
+
+**对比**：静态边 `["a", "ghost"]` 在 `validate()` 中正确报 `边引用了未定义节点: a -> ghost`，但条件边不报。
+
+**根本原因**：缺陷贯穿两层：
+
+1. `graph_config._parse_conditional_edge()`：只校验 `from`/`router` 非空、`from` 不是 START/END、`router` 在 registry 中。不检查 `from` 对应的节点是否已通过 `add_node()` 注册。
+2. `graph.py validate()` 第 283-286 行：只检查条件边 router 是否 callable，不检查条件边源节点是否在 `self._nodes` 中。
+3. `graph.py compile()` 第 252-258 行：只检查 `_entry` 和 `_edges` 中的引用，完全遗漏 `_cond` 的键。
+
+**建议修复**（至少在 graph_config 层修复，graph 层可选）：
+
+`graph_config.py` — 在 `build_state_graph_from_config()` 解析完所有 nodes 后，增加 collected nodes set，在处理 conditional_edges 时校验 `from` 节点是否在 set 中：
+
+```python
+# 在 node 循环后收集
+declared_nodes = set()
+for node_spec in _iter_node_specs(...):
+    node = _parse_node(node_spec, graph_name)
+    declared_nodes.add(node["name"])
+    ...
+
+# 在 conditional_edges 循环中增加校验
+for index, cond_spec in enumerate(...):
+    cond = _parse_conditional_edge(cond_spec, graph_name, index)
+    if cond["from"] not in declared_nodes:
+        raise ValueError(
+            f"graph {graph_name} conditional_edges[{index}] "
+            f"引用了未定义节点: {cond['from']}"
+        )
+    ...
+```
+
+`graph.py` — 在 `validate()` 第 2 项检查中增加条件边源节点校验：
+
+```python
+# 2) 条件边函数必须可调用，且源节点必须存在
+for src, router in self._cond.items():
+    if src not in self._nodes:
+        issues.append(ValidationIssue(
+            "error", f"条件边引用了未定义节点: {src}", node=src))
+    if not callable(router):
+        ...
+```
+
+`graph.py` — 在 `compile()` 中增加 `_cond` 键的检查：
+
+```python
+referenced = set(self._entry)
+for outs in self._edges.values():
+    referenced.update(outs)
+referenced.update(self._cond.keys())  # 新增
+```
+
+#### 问题 2（P2）：同一节点既有静态出边又有条件出边时，静默覆盖无警告
+
+**位置**：`agentflow/graph.py:246-249` — `add_conditional_edges()`
+
+**复现**：
+```python
+g.add_edge("a", "b")            # a -> b 静态边
+g.add_conditional_edges("a", r) # a -> router 条件边
+```
+
+实际执行时条件边覆盖静态边（`b` 不会被执行），但 `validate()` 返回 0 个 warning/error。
+
+**影响**：低。这是 LangGraph 的设计语义（后添加的覆盖先添加的），但 graph_config 层可以给个 warning 提醒用户可能不是预期行为。
+
+#### 问题 3（P2）：`validate()` 错误消息中泄漏内部节点名 `__end__` / `__start__`
+
+**位置**：`agentflow/graph.py` — `validate()` 各处 + `graph_config._format_validation_errors()`
+
+**复现**：当用户在 JSON 中使用 `END` alias 但配置出错时，error 消息可能显示 `a -> __start__` 而非 `a -> START`。
+
+**影响**：低。`__start__` / `__end__` 是内部 sentinel 值，用户不应直接看到。建议在 `_format_validation_errors()` 中做替换，或在 `validate()` 中统一使用用户可见名称。
+
+### 已通过验证的防御点（37 项 fuzz 全部处理正确）
+
+| 类别 | 测试场景 | 结果 |
+|------|---------|------|
+| 空值/类型 | nodes=null, edges=null, cond=null, graph_spec=数组, graphs=数组 | 全部 ValueError |
+| 边界值 | max_steps=0/-1/True, retries=-1/2.5, retry_backoff=-0.1/inf/nan | 全部 ValueError |
+| START/END | cond.from=START/END/内部值, 边中用内部值 | 正确拦截 |
+| 字段缺失 | cond 缺 from/router, nodes mapping 缺 fn, graph name 不存在 | 全部 ValueError |
+| 特殊类型 | retry_backoff 为字符串数字("0.5"), reducers key 为整数 | 正确接受 |
+| 运行时 | router 返回不存在的节点名 → KeyError（运行时崩溃） | 可接受（静态分析 warning 已覆盖） |
+| 结构 | 空 graph, 孤岛节点, 无入口 | validate 正确报告 |
+
+### 最终结论
+
+**P1 × 1，P2 × 2。** 问题 1（conditional_edges.from 不校验源节点）是明确的验证遗漏，静态边有校验但条件边没有，属于对称性缺陷，建议修复。问题 2、3 为增强建议，不阻塞但值得记录。
