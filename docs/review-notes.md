@@ -691,3 +691,59 @@ Commit: `603be835ea60159baf7acc6620430653bfa80dd6`
 ### 最终结论
 
 PASS。`603be83` 的 JSON 图配置化实现范围清晰，未引入动态代码执行风险，demo 重写后的 7 个场景保持可运行，Python 3.7 与 checkpoint/resume invariant 均通过验证。建议 PM 可进入合并确认流程。
+
+---
+
+## CR 审查 — 未提交 diff：Python 3.14 validate + graph_config schema fix（2026-06-19）
+
+### 审查范围
+
+当前未提交 diff：
+
+- `agentflow/graph.py`
+- `agentflow/graph_config.py`
+- `test/test_graph_config.py`
+
+背景：Dev 修复两个问题：
+
+1. Python 3.14 下 `ast.Str` 不存在导致 `StateGraph.validate()` 崩溃。
+2. `graph_config` 未支持计划要求的 `nodes` 对象映射 + `fn` 字段。
+
+### 测试结果
+
+- `PYTHONPATH=. python3 -m pytest test/test_graph.py test/test_graph_config.py -q`：26 passed
+- `PYTHONPATH=. python3 -m pytest test/ -q`：113 passed
+- `PYTHONPATH=. /Users/ospacer/.py37/bin/python -m pytest test/ -q`：113 passed
+- `/Users/ospacer/.py37/bin/python demo.py`：7 个 demo 场景全部执行完毕
+- `PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh`：第一次在 `test/test_activity.py:248` 的 `duration_ms > 0` 断言上偶发失败；单独复跑 `test/test_activity.py` 通过，随后完整复跑 `verify_py37.sh` 通过
+- `git diff --check`：无输出
+
+### 重点审查结论
+
+1. Python 3.14 `ast.Str` 修复：PASS
+
+`agentflow/graph.py` 改为通过 `getattr(ast, "Str", None)` 做兼容 guard。Python 3.14 下不会因为属性缺失崩溃；Python 3.7 下仍保留 `ast.Str` 路径。`test/test_graph.py` 中条件边静态返回分析相关用例通过。
+
+2. JSON schema 兼容：PASS
+
+`agentflow/graph_config.py` 新增 `_iter_node_specs()`，支持计划要求的 `nodes` 对象映射，同时保留既有 list schema。`_parse_node()` 支持 `fn` 作为 `handler` 别名；既有字符串节点 shorthand 和 list object `handler` schema 未被破坏。
+
+3. 无任意 import/eval 风险：PASS
+
+本次 diff 没有引入 `eval()`、`exec()`、`__import__`、`importlib`、`globals()`、`locals()` 等动态执行入口。节点、路由、reducer 仍只从显式 registry / 固定 reducer 表解析。
+
+4. 测试覆盖：PASS
+
+新增测试覆盖 `nodes` mapping + `fn`、list object + `fn`。既有测试继续覆盖 list string shorthand、list object `handler`、START/END alias、append reducer、conditional router、retries、unknown node/router/reducer、JSON-built graph validate。
+
+5. checkpoint/resume invariant：PASS
+
+本次 diff 未修改 `CompiledGraph` 的 checkpoint/frontier/resume 执行逻辑。全量 pytest 与 `verify_py37.sh` 中 invariant 测试均通过。
+
+### Findings
+
+- P2（非阻塞，既有测试脆弱性）：`scripts/verify_py37.sh` 首次运行时，`test/test_activity.py:248` 偶发触发 `assert rec["duration_ms"] > 0`。单独复跑和完整复跑均通过，且该问题不属于本次实现 diff，但说明验收脚本存在时间精度边界上的 flaky 风险。后续可将断言改为 `>= 0` 或让测试中的 activity 明确产生可测耗时。
+
+### 最终结论
+
+PASS。本次未提交 diff 修复目标明确，Python 3.7 和当前 `python3` 全量测试通过，demo 7 场景通过，未发现 P0/P1 阻塞问题，未发现 checkpoint/resume 回归或动态代码执行风险。

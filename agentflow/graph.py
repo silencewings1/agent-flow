@@ -392,7 +392,8 @@ class StateGraph:
             if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
                 literals.add(expr.value)
                 return
-            if isinstance(expr, ast.Str):
+            ast_str = getattr(ast, "Str", None)
+            if ast_str is not None and isinstance(expr, ast_str):
                 literals.add(expr.s)
                 return
             if isinstance(expr, (ast.IfExp, ast.BoolOp)):

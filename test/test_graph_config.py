@@ -87,6 +87,34 @@ def test_minimal_graph_executes_with_start_end_aliases():
     assert res.state["seen"] == "a"
 
 
+def test_nodes_mapping_with_fn_field_executes():
+    config = graph_config("g", {
+        "nodes": {
+            "worker": {"fn": "flaky", "retries": 2},
+        },
+        "edges": [["START", "worker"], ["worker", "END"]],
+    })
+
+    app = build_graph_from_config(config, "g", NODES, ROUTERS, Checkpointer())
+    res = app.invoke({}, thread_id="mapping-fn")
+
+    assert res.status == "completed"
+    assert res.state["attempt"] == 2
+
+
+def test_node_object_fn_alias_executes():
+    config = graph_config("g", {
+        "nodes": [{"name": "worker", "fn": "a"}],
+        "edges": [["START", "worker"], ["worker", "END"]],
+    })
+
+    app = build_graph_from_config(config, "g", NODES, ROUTERS, Checkpointer())
+    res = app.invoke({}, thread_id="object-fn")
+
+    assert res.status == "completed"
+    assert res.state["seen"] == "a"
+
+
 def test_append_reducer_merges_parallel_updates_in_batch_order():
     config = graph_config("g", {
         "reducers": {"items": "append"},

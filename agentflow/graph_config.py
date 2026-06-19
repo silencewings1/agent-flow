@@ -41,8 +41,10 @@ def build_graph_from_config(
     Supported fields under ``graphs.<graph_name>``:
     - max_steps: int
     - reducers: {"state_key": "append"|"overwrite"}
-    - nodes: [{"name": "...", "handler": "...", "retries": 0, ...}, ...]
-      A plain string node is shorthand for {"name": value, "handler": value}.
+    - nodes: {"node": {"fn": "handler", "retries": 0, ...}, ...}
+      or [{"name": "...", "handler": "...", "retries": 0, ...}, ...].
+      "fn" is an alias for "handler"; a plain string node is shorthand for
+      {"name": value, "handler": value}.
     - edges: [["START", "node"], {"from": "node", "to": "END"}, ...]
     - conditional_edges: [{"from": "node", "router": "route_name"}, ...]
     """
@@ -76,7 +78,7 @@ def build_state_graph_from_config(
     max_steps = int(spec.get("max_steps", 50))
     g = StateGraph(schema, max_steps=max_steps)
 
-    for node_spec in spec.get("nodes", []):
+    for node_spec in _iter_node_specs(spec.get("nodes", [])):
         node = _parse_node(node_spec)
         handler_name = node["handler"]
         if handler_name not in node_registry:
@@ -118,13 +120,35 @@ def _parse_reducers(raw: Any) -> Dict[str, Callable[[Any, Any], Any]]:
     return reducers
 
 
+def _iter_node_specs(raw: Any) -> List[Any]:
+    if raw is None:
+        return []
+    if isinstance(raw, Mapping):
+        specs = []
+        for name, node_spec in raw.items():
+            if isinstance(node_spec, Mapping):
+                spec = dict(node_spec)
+                spec.setdefault("name", name)
+            elif isinstance(node_spec, str):
+                spec = {"name": name, "handler": node_spec}
+            elif node_spec is None:
+                spec = {"name": name, "handler": name}
+            else:
+                raise ValueError("nodes 对象的值必须是对象、字符串或 null")
+            specs.append(spec)
+        return specs
+    if isinstance(raw, list):
+        return raw
+    raise ValueError("nodes 必须是数组或对象")
+
+
 def _parse_node(raw: Any) -> Dict[str, Any]:
     if isinstance(raw, str):
         return {"name": raw, "handler": raw}
     if not isinstance(raw, Mapping):
         raise ValueError("nodes 项必须是字符串或对象")
     name = raw.get("name")
-    handler = raw.get("handler", name)
+    handler = raw.get("handler", raw.get("fn", name))
     if not name or not handler:
         raise ValueError("node 必须包含 name，且 handler 不能为空")
     return {
