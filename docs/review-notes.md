@@ -621,3 +621,73 @@ Python 3.7 下字符串字面量节点是 `ast.Str`，新增分支能让 `route_
 ### 最终结论
 
 PASS。`c8d276b` 修复目标明确、范围小，Python 3.7 全量测试通过，未发现影响 checkpoint/resume invariant 的回归。建议 PM 可进入合并确认流程。
+
+---
+
+## CR 审查 — 603be83 Add JSON graph configuration（2026-06-19）
+
+### 审查范围
+
+Commit: `603be835ea60159baf7acc6620430653bfa80dd6`
+
+重点审查文件：
+
+- `agentflow/graph_config.py`
+- `conf/graph_config.example.json`
+- `demo.py`
+- `test/test_graph_config.py`
+
+`git show --stat --oneline 603be835ea60159baf7acc6620430653bfa80dd6`：
+
+- `agentflow/__init__.py | 8 ++`
+- `agentflow/graph_config.py | 178 ++++++++++++++++++++++++++++++++++++++`
+- `conf/graph_config.example.json | 124 +++++++++++++++++++++++++++`
+- `demo.py | 190 +++++++++++++++++++++--------------------`
+- `test/test_graph_config.py | 173 +++++++++++++++++++++++++++++++++++++`
+- 合计 5 files changed, 579 insertions(+), 94 deletions(-)
+
+`git show --check 603be835ea60159baf7acc6620430653bfa80dd6`：无 whitespace / conflict marker 问题。
+
+### 测试结果
+
+- `source /Users/ospacer/.py37/bin/activate && PYTHONPATH=. python -m pytest test/ -q`：111 passed
+- `source /Users/ospacer/.py37/bin/activate && python demo.py`：7 个 demo 场景全部执行完毕
+- `source /Users/ospacer/.py37/bin/activate && PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh`：全部通过，解释器 Python 3.7.17
+
+### 重点审查结论
+
+1. JSON schema 简单稳定：PASS
+
+配置结构保持在 `graphs.<name>` 下声明 `max_steps`、`reducers`、`nodes`、`edges`、`conditional_edges`，节点支持字符串 shorthand 和对象形式，边支持二元数组和 `{from,to}` 对象。示例配置覆盖 pipeline、parallel、retry、timetravel、real_coder、real_debugger 六类图，能对应 demo 现有场景。
+
+2. 无任意 import/eval：PASS
+
+`graph_config.py` 只使用 `json.load` 读取配置，node/router/reducer 都来自调用方显式 registry。静态搜索未发现 `eval()`、`exec()`、`__import__`、`importlib`、`globals()`、`locals()` 等动态执行入口。
+
+3. unknown registry entries：PASS
+
+未知 node handler、router、reducer 均在构建阶段抛 `ValueError`。新增测试 `test_unknown_node_router_and_reducer_raise_value_error` 已覆盖三类失败路径。
+
+4. demo 7 场景行为保持：PASS
+
+`demo.py` 改为通过 `conf/graph_config.example.json` 构图后，pipeline 中断/恢复、并行 fan-out、retry、checkpoint history、LLM config 展示、real coder 写文件、real debugger pytest 回环均跑通。场景 7 最终 `tests_passed=True`，状态 `completed`。
+
+5. Python 3.7 兼容：PASS
+
+新增代码未使用 py38+ 语法。`verify_py37.sh` 在 Python 3.7.17 下通过 AST 兼容检查、invariant、activity、graph、planner、review、tools、coder、debugger、demo 全量验证。
+
+6. checkpoint/resume invariant：PASS
+
+本 commit 未修改 `CompiledGraph` resume/frontier/checkpoint 核心逻辑。`verify_py37.sh` 中 `test_no_rerun_on_resume` 通过，完整 pytest 也通过既有 invariant 测试。配置构建只生成 `StateGraph`，不改变 checkpoint/resume 语义。
+
+7. 测试覆盖：PASS
+
+`test/test_graph_config.py` 覆盖 JSON 读取、START/END alias、append reducer 并行 merge 顺序、conditional router registry、node retries、unknown node/router/reducer、以及可先构建未编译图再 validate 的用法。结合 `demo.py` 和既有全量测试，覆盖对本轮目标足够。
+
+### Findings
+
+无阻塞 findings。
+
+### 最终结论
+
+PASS。`603be83` 的 JSON 图配置化实现范围清晰，未引入动态代码执行风险，demo 重写后的 7 个场景保持可运行，Python 3.7 与 checkpoint/resume invariant 均通过验证。建议 PM 可进入合并确认流程。
