@@ -193,10 +193,11 @@ graph TD
 4. P0-2: 工具调用记录可查询、可聚合
 5. P0-3: 非法图编译前就报错，合法图无额外告警
 
-## 当前完成状态（2026-06-19 进度）
+## 当前完成状态（2026-06-20 进度）
 
 - P0/P1 修复、JSON 图配置、README 更新已完成。
 - 本轮 P2 flaky 修复已完成，`test/test_activity.py` 中 activity duration 断言已调整为允许 0ms 的合法极快调用耗时，自测验证通过。
 - `conf/graph_config.example.json` 已全量切换为 canonical `nodes` 对象映射 + `fn` 写法，README JSON 图配置说明已同步；示例中不再保留 list / string / `handler` 兼容写法。
-- Dev 本轮已增强 `agentflow/graph_config.py` 配置校验：`max_steps`、canonical node `fn`、节点 retry 字段、`edges` / `conditional_edges` 类型和条件边来源会在构图阶段抛带 graph/field/node 上下文的 `ValueError`；CR 尚未执行。
+- `agentflow/graph_config.py` 配置校验增强已完成并通过 CR：`max_steps`、canonical node `fn`、节点 retry 字段、`edges` / `conditional_edges` 类型和条件边来源会在构图阶段抛带 graph/field/node 上下文的 `ValueError`。
+- 对抗性 fuzz 发现的 `conditional_edges.from` 未校验源节点 P1 缺陷已由 `3b6da1b` 修复；CR 复验确认 config 构建、`StateGraph.validate()`、`StateGraph.compile()` 三层防线均生效，Python 3.7 全量验证通过。
 - 当前剩余建议：长期 P2/设计项继续按后续规划处理。

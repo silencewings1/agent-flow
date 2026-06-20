@@ -1060,3 +1060,55 @@ g.add_conditional_edges("a", r) # a -> router 条件边
 ### 最终结论
 
 **P1 × 1，P2 × 2。** 问题 1（conditional_edges.from 不校验源节点）是明确的验证遗漏，静态边有校验但条件边没有，属于对称性缺陷，建议修复。问题 2、3 为增强建议，不阻塞但值得记录。
+
+---
+
+## CR 复验 — 3b6da1b conditional_edges.from 源节点校验修复（2026-06-20）
+
+### 审查范围
+
+commit `3b6da1b` 相对 `origin/master` 的修复 diff：
+
+- `agentflow/graph.py`
+- `agentflow/graph_config.py`
+- `test/test_graph.py`
+- `test/test_graph_config.py`
+- `docs/review-notes.md`
+
+目标：复验上一节对抗性 fuzz 发现的 P1：`conditional_edges.from` 指向未声明节点时，JSON 构建、`StateGraph.validate()`、`StateGraph.compile()` 都没有报错。
+
+### 测试结果
+
+- `git diff --check origin/master..HEAD`：PASS，无空白错误。
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /Users/ospacer/.py37/bin/python -m pytest test/test_graph.py test/test_graph_config.py test/test_invariants.py -q -p no:cacheprovider`：54 passed。
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /Users/ospacer/.py37/bin/python -m pytest test/ -q -p no:cacheprovider`：139 passed。
+- `PYTHONDONTWRITEBYTECODE=1 PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh`：PASS，解释器 Python 3.7.17；demo 7 个场景全部执行完毕，场景 7 最终 `status=completed`、`tests_passed=True`。
+- 补充对抗性复现脚本：PASS，直接验证 `StateGraph.add_conditional_edges("ghost", ...)` 在 `validate()` 与 `compile()` 均失败，JSON config 的 `conditional_edges.from="ghost"` 也失败。
+
+### 重点审查结论
+
+1. `graph_config.py` 构建期校验：PASS
+
+构建节点时收集 `declared_nodes`，解析 `conditional_edges` 后用原始 config 节点名校验 `from` 是否已声明。该逻辑能区分 node name 与 handler name，覆盖了 `{"my_node": {"fn": "a"}}` 时误把 `"a"` 当节点名的情况；`START` / `END` 仍由 `_parse_conditional_edge()` 拦截。
+
+2. `StateGraph.validate()` 静态校验：PASS
+
+`validate()` 现在对 `_cond` 的源节点执行存在性检查，`add_conditional_edges("ghost", router)` 会产生 error。该检查在条件边 router callable 检查之前执行，不影响既有非 callable router 报错路径。
+
+3. `StateGraph.compile()` 最终防线：PASS
+
+`compile()` 将 `_cond.keys()` 加入 referenced 集合，即使调用方绕过 JSON 配置层且不主动调用 `validate()`，未定义条件边源节点也会抛 `ValueError`。这与静态边引用检查保持一致。
+
+4. 测试覆盖：PASS
+
+新增测试覆盖了直接 `StateGraph` API、JSON config 未定义源节点、handler name 不等于 node name、空 nodes 列表等关键场景。目标测试、全量 pytest、Python 3.7 全量验证均通过。
+
+### Findings
+
+- P0：无。
+- P1：无。
+- P2：无。
+
+### 最终结论
+
+PASS。`3b6da1b` 已修复 `conditional_edges.from` 未校验源节点的 P1 缺陷，三层防线（config 构建、validate、compile）均生效，未发现 checkpoint/resume invariant、Python 3.7 兼容性或 demo 回归。建议 PM 可进入状态文档更新与同步流程。
