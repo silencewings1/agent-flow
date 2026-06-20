@@ -200,4 +200,5 @@ graph TD
 - `conf/graph_config.example.json` 已全量切换为 canonical `nodes` 对象映射 + `fn` 写法，README JSON 图配置说明已同步；示例中不再保留 list / string / `handler` 兼容写法。
 - `agentflow/graph_config.py` 配置校验增强已完成并通过 CR：`max_steps`、canonical node `fn`、节点 retry 字段、`edges` / `conditional_edges` 类型和条件边来源会在构图阶段抛带 graph/field/node 上下文的 `ValueError`。
 - 对抗性 fuzz 发现的 `conditional_edges.from` 未校验源节点 P1 缺陷已由 `3b6da1b` 修复；CR 复验确认 config 构建、`StateGraph.validate()`、`StateGraph.compile()` 三层防线均生效，Python 3.7 全量验证通过。
+- P2-1 动态 Send/worker PM 计划已收敛；Dev 分支 `codex/p2-send-worker` 提交 `da67cee` 已完成实现和自测，当前阶段为 **待独立 CR**，PM 不得合并。
 - 当前剩余建议：长期 P2/设计项继续按后续规划处理。
