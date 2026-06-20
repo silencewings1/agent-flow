@@ -82,7 +82,7 @@ def test_dataclass_imports() -> None:
 # —— AST 检查：确保源码不含 3.8+ 才支持的语法 —— #
 
 # 需要检查的目录
-_SOURCE_DIRS = ["agentflow", "test", "demo.py"]
+_SOURCE_DIRS = ["agentflow", "test", "demo.py", "demo"]
 
 
 def _walk_py_files() -> List[str]:

@@ -70,7 +70,7 @@ PYTHONPATH=. $PY37 test/test_debugger.py
 
 echo
 echo "=== 12. demo 跑测 ==="
-PYTHONPATH=. $PY37 demo.py
+PYTHONPATH=. $PY37 -m demo
 
 echo
 echo "=== 全部通过 ==="

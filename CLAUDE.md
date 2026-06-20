@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # 默认使用 Python 3.7 环境（dev_py37 兼容性要求）
 source /Users/ospacer/.py37/bin/activate
 
-python demo.py                                      # Run all 7 demo scenarios
+python -m demo                                      # Run all 8 demo scenarios
 PYTHONPATH=. python test/test_invariants.py          # Run invariant tests
 PYTHONPATH=. python -m pytest test/ -v              # Run all test suites
 ./scripts/verify_py37.sh                            # 3.7 兼容性全量验证（需 3.7 环境）

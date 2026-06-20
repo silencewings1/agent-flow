@@ -9,7 +9,7 @@
 git diff --check master..HEAD
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /Users/ospacer/.py37/bin/python -m pytest test/ -q -p no:cacheprovider
 PYTHONDONTWRITEBYTECODE=1 PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /Users/ospacer/.py37/bin/python demo.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /Users/ospacer/.py37/bin/python -m demo
 ```
 
 ## 核心审查点
@@ -26,7 +26,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /Users/ospacer/.py37/bin/python demo.py
 - router 返回缺失 Send target 或未定义普通节点时，运行应失败并给出可定位错误。
 - `fanout_reducer` 只接受 dict，并按 `{instance_id: payload}` 合并。
 - JSON graph_config 支持 `"fanout"` reducer 和 `{"from": ["a", "b"], "to": "join"}`，非法 source/target 应抛带 graph 上下文的 `ValueError`。
-- `conf/graph_config.example.json` 的 `dynamic_send` 示例通过 `demo.py` 跑通，且不引入 JSON 动态 import/eval。
+- `conf/graph_config.example.json` 的 `dynamic_send` 示例通过 `python -m demo` 跑通，且不引入 JSON 动态 import/eval。
 
 ## 对抗性 fuzz 建议
 

@@ -47,7 +47,7 @@ test/
   test_graph_config.py # JSON 图配置测试
   test_planner.py / test_coder.py / test_debugger.py / test_review.py
   test_tools.py / test_py37_compat.py
-demo.py              # 8 个可运行场景
+demo/                # 按功能拆分的 8 个可运行 demo 场景
 ```
 
 ## 快速开始
@@ -55,7 +55,7 @@ demo.py              # 8 个可运行场景
 ```bash
 source /Users/ospacer/.py37/bin/activate
 
-python demo.py                                      # 跑 8 个演示场景
+python -m demo                                      # 跑 8 个演示场景
 PYTHONPATH=. python -m pytest test/ -q              # 跑全部测试
 PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh
 ```
@@ -274,7 +274,7 @@ reg = LLMRegistry.load("llm_config.json")  # 文件不存在则全 mock
 N.set_registry(reg)                        # 流水线节点据此调用对应 provider
 ```
 
-节点内通过 `get_registry().complete("节点名", prompt)` 调用，由配置决定打到哪个厂商。**图结构、checkpointer、HITL 全部不变。** 见 `demo.py` 场景 5。
+节点内通过 `get_registry().complete("节点名", prompt)` 调用，由配置决定打到哪个厂商。**图结构、checkpointer、HITL 全部不变。** 见 `/Users/ospacer/cpp_test/agent-flow/demo/demo_llm_config.py`。
 
 ## 已验证能力
 
@@ -320,7 +320,7 @@ N.set_registry(reg)                        # 流水线节点据此调用对应 p
 - `ai_review` / `human_review` 分层，中断只发生在 `human_review`；
 - 受控命令执行白名单与超时/失败路径。
 
-`demo.py` 覆盖 8 个场景：流水线 HITL、并行扇出、节点重试、时间旅行、每节点 LLM 配置、真实 Coder 写文件、真实 Debugger pytest 回环、动态 Send/worker。
+`demo/` 覆盖 8 个场景：流水线 HITL、并行扇出、节点重试、时间旅行、每节点 LLM 配置、真实 Coder 写文件、真实 Debugger pytest 回环、动态 Send/worker。
 
 `PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh` 覆盖 Python 3.7 语法、导入和测试兼容性。
 
@@ -363,7 +363,7 @@ API Key 只从环境变量读取，不落磁盘。
 ```bash
 # 跑全部演示场景（无 Key 也能跑，LLM 调用自动降级为 mock）
 source /Users/ospacer/.py37/bin/activate
-python demo.py
+python -m demo
 
 # 跑所有测试
 PYTHONPATH=. python -m pytest test/ -q
