@@ -348,6 +348,42 @@ def test_to_mermaid_includes_static_edges():
     print("✅ test_to_mermaid_includes_static_edges")
 
 
+def test_barrier_edge_validates_clean_and_mermaid_marks_barrier():
+    g = StateGraph()
+    g.add_node("a", _noop)
+    g.add_node("b", _noop)
+    g.add_node("join", _noop)
+    g.add_edge(START, "a")
+    g.add_edge(START, "b")
+    g.add_edge(["a", "b"], "join")
+    g.add_edge("join", END)
+    issues = g.validate()
+    errs = [i for i in issues if i.level == "error"]
+    assert not errs, [str(i) for i in errs]
+    out = g.to_mermaid()
+    assert "barrier" in out
+    assert "a -->|barrier| join" in out
+    assert "b -->|barrier| join" in out
+    print("✅ test_barrier_edge_validates_clean_and_mermaid_marks_barrier")
+
+
+def test_barrier_edge_rejects_undefined_nodes():
+    g = StateGraph()
+    g.add_node("a", _noop)
+    g.add_edge(START, "a")
+    g.add_edge(["a", "ghost"], "join")
+    issues = g.validate()
+    errs = [i for i in issues if i.level == "error"]
+    assert any("ghost" in i.message for i in errs), [str(i) for i in errs]
+    assert any("join" in i.message for i in errs), [str(i) for i in errs]
+    try:
+        g.compile()
+        assert False, "compile() 应抛 ValueError"
+    except ValueError as e:
+        assert "ghost" in str(e) or "join" in str(e)
+    print("✅ test_barrier_edge_rejects_undefined_nodes")
+
+
 # ============================================================
 # 8) 集成：实际 pipeline 验证
 # ============================================================
@@ -391,6 +427,8 @@ ALL_TESTS = [
     test_to_mermaid_contains_all_nodes,
     test_to_mermaid_marks_conditional_edges,
     test_to_mermaid_includes_static_edges,
+    test_barrier_edge_validates_clean_and_mermaid_marks_barrier,
+    test_barrier_edge_rejects_undefined_nodes,
     test_real_pipeline_validates_clean,
 ]
 

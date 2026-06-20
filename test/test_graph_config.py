@@ -25,6 +25,10 @@ def node_c(state, ctx):
     return {"done": True, "log": ["c"]}
 
 
+def join_node(state, ctx):
+    return {"log": ["join"]}
+
+
 def fanout_a(state, ctx):
     return {"items": ["a"]}
 
@@ -51,6 +55,7 @@ NODES = {
     "a": node_a,
     "b": node_b,
     "c": node_c,
+    "join": join_node,
     "fanout_a": fanout_a,
     "fanout_b": fanout_b,
     "flaky": flaky,
@@ -127,6 +132,55 @@ def test_append_reducer_merges_parallel_updates_in_batch_order():
 
     assert res.status == "completed"
     assert res.state["items"] == ["a", "b"]
+
+
+def test_fanout_reducer_merges_dict_updates():
+    config = graph_config("g", {
+        "reducers": {"items": "fanout"},
+        "nodes": {
+            "fanout_a": {"fn": "fanout_a"},
+            "fanout_b": {"fn": "fanout_b"},
+        },
+        "edges": [["START", "fanout_a"], ["START", "fanout_b"]],
+    })
+
+    def fa(state, ctx):
+        return {"items": {ctx.instance_id: "a"}}
+
+    def fb(state, ctx):
+        return {"items": {ctx.instance_id: "b"}}
+
+    nodes = dict(NODES)
+    nodes["fanout_a"] = fa
+    nodes["fanout_b"] = fb
+    app = build_graph_from_config(config, "g", nodes, ROUTERS, Checkpointer())
+    res = app.invoke({}, thread_id="fanout-reducer")
+
+    assert res.status == "completed"
+    assert res.state["items"] == {"fanout_a": "a", "fanout_b": "b"}
+
+
+def test_json_multi_source_barrier_edge_executes_after_all_sources():
+    config = graph_config("g", {
+        "reducers": {"log": "append"},
+        "nodes": {
+            "a": {"fn": "a"},
+            "b": {"fn": "b"},
+            "join": {"fn": "join"},
+        },
+        "edges": [
+            ["START", "a"],
+            ["a", "b"],
+            {"from": ["a", "b"], "to": "join"},
+            ["join", "END"],
+        ],
+    })
+
+    app = build_graph_from_config(config, "g", NODES, ROUTERS, Checkpointer())
+    res = app.invoke({}, thread_id="json-barrier")
+
+    assert res.status == "completed"
+    assert res.state["log"] == ["a", "b", "join"]
 
 
 def test_conditional_edge_uses_registry_router():
@@ -265,6 +319,34 @@ def test_edges_must_be_list():
             graph_config("g", {
                 "nodes": {"a": {"fn": "a"}},
                 "edges": {"from": "START", "to": "a"},
+            }),
+            "g", NODES, ROUTERS, Checkpointer(),
+        )
+
+
+def test_multi_source_barrier_edge_rejects_unknown_nodes():
+    with pytest.raises(ValueError, match="ghost"):
+        build_graph_from_config(
+            graph_config("g", {
+                "nodes": {
+                    "a": {"fn": "a"},
+                    "join": {"fn": "join"},
+                },
+                "edges": [
+                    ["START", "a"],
+                    {"from": ["a", "ghost"], "to": "join"},
+                ],
+            }),
+            "g", NODES, ROUTERS, Checkpointer(),
+        )
+
+
+def test_multi_source_barrier_edge_requires_non_empty_sources():
+    with pytest.raises(ValueError, match="至少需要一个源节点"):
+        build_graph_from_config(
+            graph_config("g", {
+                "nodes": {"join": {"fn": "join"}},
+                "edges": [{"from": [], "to": "join"}],
             }),
             "g", NODES, ROUTERS, Checkpointer(),
         )

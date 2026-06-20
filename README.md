@@ -10,7 +10,7 @@
 |---|---|
 | 节点=函数 / 边 / 条件边（支持循环） | [graph.py](agentflow/graph.py) `StateGraph.add_node / add_edge / add_conditional_edges` |
 | 超步（super-step）执行，同层节点并行 | `CompiledGraph._run_loop` + `ThreadPoolExecutor` |
-| 编排者-工作者动态扇出 | 条件边 router 可返回**节点名列表**（见 demo 场景 2） |
+| 编排者-工作者动态扇出 | 条件边 router 可返回 `Send("worker", arg)` 列表（见 demo 场景 8） |
 | 状态持久化 + 事件溯源 | [checkpoint.py](agentflow/checkpoint.py) 每个 super-step 一份 checkpoint + 追加式事件日志 |
 | **恢复时不重跑已完成节点**（硬约束） | frontier 只存「未跑节点」；恢复从 checkpoint 续跑，已完成 state 直接复用 |
 | 人在回路（interrupt） | [interrupt.py](agentflow/interrupt.py) `ctx.interrupt(payload)` → 暂停存盘；`Command(resume=...)` 注入恢复 |
@@ -24,7 +24,7 @@
 
 ```
 agentflow/
-  state.py       # 共享 state + reducer 合并（overwrite / append）
+  state.py       # 共享 state + reducer 合并（overwrite / append / fanout）
   interrupt.py   # Interrupt 异常 + Command + interrupt() 原语
   checkpoint.py  # 事件溯源式 SQLite checkpointer（含 activity 缓存 + tool_calls 表）
   graph.py       # StateGraph 定义（含 validate + to_mermaid）+ CompiledGraph 超步执行器
@@ -35,18 +35,19 @@ agentflow/
   tools.py       # 受控命令执行工具
 conf/
   llm_config.example.json   # 每节点 LLM 配置示例
-  graph_config.example.json # pipeline / parallel / retry / timetravel / real_coder / real_debugger 图配置
+  graph_config.example.json # pipeline / parallel / retry / timetravel / real_coder / real_debugger / dynamic_send 图配置
 docs/
   agent-flow-research-report.md  # 调研报告
   agent-flow-analysis-report.md  # 功能分析报告
 test/
   test_invariants.py   # 核心不变量测试（不重跑 / 回环终止）
   test_activity.py     # Activity 缓存 + 工具调用持久化测试
+  test_send.py         # 动态 Send/worker + barrier 测试
   test_graph.py        # 图校验 + Mermaid 导出测试
   test_graph_config.py # JSON 图配置测试
   test_planner.py / test_coder.py / test_debugger.py / test_review.py
   test_tools.py / test_py37_compat.py
-demo.py              # 7 个可运行场景
+demo.py              # 8 个可运行场景
 ```
 
 ## 快速开始
@@ -54,7 +55,7 @@ demo.py              # 7 个可运行场景
 ```bash
 source /Users/ospacer/.py37/bin/activate
 
-python demo.py                                      # 跑 7 个演示场景
+python demo.py                                      # 跑 8 个演示场景
 PYTHONPATH=. python -m pytest test/ -q              # 跑全部测试
 PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh
 ```
@@ -100,6 +101,35 @@ r = app.invoke({"requirement": "..."}, thread_id="job-1")  # → interrupted
 r = app.invoke({}, thread_id="job-1", command=Command(resume={"approve": True}))  # → completed
 ```
 
+## 动态 Send/worker（P2-1）
+
+条件边 router 可以返回 `Send`，在下一个 super-step 动态生成多个同名 worker 实例。每个实例读取自己的 `arg`，但 `arg` 不自动写回全局 state；worker 返回值仍通过 reducer 合并：
+
+```python
+from agentflow import Send, StateGraph, StateSchema, START, fanout_reducer
+
+schema = StateSchema(reducers={"results": fanout_reducer})
+g = StateGraph(schema)
+
+def split(state, ctx):
+    return {"tasks": [{"id": "a"}, {"id": "b"}]}
+
+def route_tasks(state):
+    return [Send("worker", {"task": t}, key=t["id"]) for t in state["tasks"]]
+
+def worker(state, ctx):
+    return {"results": {ctx.instance_id: state["task"]["id"]}}
+
+g.add_node("split", split)
+g.add_node("worker", worker)
+g.add_edge(START, "split")
+g.add_conditional_edges("split", route_tasks)
+```
+
+- `ctx.instance_id` 自动区分同一节点的多个 Send 实例，activity/tool 缓存不会互相撞。
+- `fanout_reducer` 合并 `{instance_id: payload}` 字典，适合汇总动态 worker 产出。
+- `add_edge(["a", "b"], "join")` 表示严格 barrier，只有所有来源都完成后才调度 `join`。
+
 ## P0 新增能力（可靠性增强）
 
 ### Activity 缓存（P0-1）—— 中断恢复不重跑 LLM
@@ -114,7 +144,7 @@ def planner(state, ctx):
     return {"plan": plan}
 ```
 
-- **缓存键**：`(thread_id, node, step, activity_key)` — 同一节点多次调用用不同 key 区分
+- **缓存键**：`(thread_id, node, step, activity_key)`；Send worker 会把 `ctx.instance_id` 自动并入 `activity_key`，同名 worker 多实例不互相命中
 - **异常缓存**：`fn()` 抛异常也会被记录，重入时**重抛**（避免反复重试同一个会失败的调用）
 - **无 checkpointer 时**：退化为直接调用 `fn()`
 
@@ -188,8 +218,9 @@ app = build_graph_from_config(
 ```
 
 - 顶层字段是 `graphs`；每个 graph 支持 `max_steps`、`reducers`、`nodes`、`edges`、`conditional_edges`。
-- `reducers` 当前支持 `"append"` / `"overwrite"`；未声明的 state key 默认覆盖。
+- `reducers` 当前支持 `"append"` / `"fanout"` / `"overwrite"`；未声明的 state key 默认覆盖。
 - `edges` / router 返回值里的 `"START"`、`"END"` 会映射到内置 `START` / `END` sentinel。
+- `edges` 支持多源 barrier 对象：`{"from": ["w1", "w2"], "to": "join"}`。
 - `node` 和 `router` 只从调用方显式传入的 registry 白名单解析；JSON 不允许任意 `import` / `eval`。
 - 示例配置统一采用对象映射 + `fn` 的规范写法：`"nodes": {"planner": {"fn": "planner"}, "coder": {"fn": "dummy_coder_fix_test"}}`；带重试的节点写作 `"flaky": {"fn": "flaky", "retries": 2}`。
 - 配置校验失败会抛 `ValueError`，错误信息包含 graph 名、字段名或节点名，便于定位 JSON。
@@ -272,9 +303,15 @@ N.set_registry(reg)                        # 流水线节点据此调用对应 p
 
 `test/test_graph_config.py` 验证 JSON 图配置：
 - **load_graph_config** 正确读取 JSON；
-- **build_graph_from_config** 支持 `START` / `END` alias、append reducer、条件边 router、节点 retry；
+- **build_graph_from_config** 支持 `START` / `END` alias、append/fanout reducer、条件边 router、节点 retry、多源 barrier edge；
 - **nodes** 使用对象映射 + `fn` 的规范写法；
 - **node/router/reducer** 只能来自显式 registry，未知名称会抛 `ValueError`。
+
+`test/test_send.py` 覆盖动态 Send/worker：
+- 同名 worker 多实例、独立 `Send.arg`、activity cache 实例隔离；
+- 空 Send、Send 目标缺失、混合 Send + 普通节点名；
+- checkpoint resume 后 Send worker instance_id 稳定；
+- 严格 barrier 与 `fanout_reducer`。
 
 `test/test_planner.py`、`test/test_coder.py`、`test/test_debugger.py`、`test/test_review.py`、`test/test_tools.py` 覆盖当前节点能力：
 - planner 结构化任务拆分与 mock fallback；
@@ -283,7 +320,7 @@ N.set_registry(reg)                        # 流水线节点据此调用对应 p
 - `ai_review` / `human_review` 分层，中断只发生在 `human_review`；
 - 受控命令执行白名单与超时/失败路径。
 
-`demo.py` 覆盖 7 个场景：流水线 HITL、并行扇出、节点重试、时间旅行、每节点 LLM 配置、真实 Coder 写文件、真实 Debugger pytest 回环。
+`demo.py` 覆盖 8 个场景：流水线 HITL、并行扇出、节点重试、时间旅行、每节点 LLM 配置、真实 Coder 写文件、真实 Debugger pytest 回环、动态 Send/worker。
 
 `PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh` 覆盖 Python 3.7 语法、导入和测试兼容性。
 

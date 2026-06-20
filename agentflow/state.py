@@ -31,6 +31,17 @@ def append_reducer(old: Any, new: Any) -> Any:
     return base
 
 
+def fanout_reducer(old: Any, new: Any) -> Any:
+    """合并动态 worker 产出，约定 new 是 {instance_id: payload} 映射。"""
+    base = dict(old) if old else {}
+    if not new:
+        return base
+    if not isinstance(new, dict):
+        raise TypeError("fanout_reducer 只接受 dict 更新")
+    base.update(new)
+    return base
+
+
 @dataclass
 class StateSchema:
     """声明 state 的 key 与各自的 reducer。未声明的 key 默认用覆盖语义。"""

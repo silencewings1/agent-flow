@@ -1,7 +1,7 @@
 """DAG 引擎：StateGraph + 超步（super-step）执行器。
 
 对应报告核心结论：
-- 节点 = 函数（add_node），边 = add_edge，条件边 = add_conditional_edges（返回下一节点名）；
+- 节点 = 函数（add_node），边 = add_edge，条件边 = add_conditional_edges（可返回节点名或 Send）；
 - 超步执行：每一步把当前 frontier 里的节点**并行**跑完，再算出下一批 frontier；
 - 支持循环（条件边可指回上游，如测试失败回到 Coder）——故是「有向图」而非严格无环；
 - 节点级重试 + interrupt 暂停 + checkpoint 恢复。
@@ -11,13 +11,16 @@ START / END 是两个保留节点名，分别表示入口与出口。
 from __future__ import annotations
 
 import ast
+import copy
+import hashlib
+import json
 import time
 import traceback
 import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .checkpoint import Checkpoint, Checkpointer
 from .interrupt import Command, Interrupt, _MISSING
@@ -30,6 +33,15 @@ END = "__end__"
 NodeFn = Callable[[Dict[str, Any], "NodeContext"], Optional[Dict[str, Any]]]
 # 条件边路由函数：接收 state → 返回下一个（或多个）节点名。
 RouterFn = Callable[[Dict[str, Any]], Any]
+
+
+@dataclass
+class Send:
+    """动态调度一个 worker 节点，并给该实例注入独立 state slice。"""
+
+    node: str
+    arg: Dict[str, Any] = field(default_factory=dict)
+    key: Optional[str] = None
 
 # 异常类型名 → 异常类的映射，用于 activity 缓存恢复时还原原始异常类型
 _EXC_MAP: Dict[str, type] = {
@@ -76,6 +88,7 @@ class NodeContext:
     resume_value: Any = _MISSING  # 恢复时注入的人工值；正常执行为 _MISSING
     thread_id: str = ""
     _cp: Any = None  # Checkpointer 引用，供 activity() 使用
+    instance_id: str = ""
 
     def interrupt(self, payload: Any) -> Any:
         from .interrupt import interrupt as _interrupt
@@ -123,7 +136,8 @@ class NodeContext:
         """
         if self._cp is None:
             return fn()
-        cached = self._cp.get_activity(self.thread_id, self.node, self.step, key)
+        activity_key = self._activity_key(key)
+        cached = self._cp.get_activity(self.thread_id, self.node, self.step, activity_key)
         if cached is not None:
             result, status = cached
             if status == "exception":
@@ -140,10 +154,10 @@ class NodeContext:
             duration_ms = (time.time() - t0) * 1000
             exc_info = {"type": type(exc).__name__, "message": str(exc)}
             self._cp.put_activity(self.thread_id, self.node, self.step,
-                                  key, exc_info, "exception")
+                                  activity_key, exc_info, "exception")
             self._cp.log_tool_call(
                 self.thread_id, self.node, self.step,
-                tool_name=key, activity_key=key,
+                tool_name=key, activity_key=activity_key,
                 input_summary=input_summary,
                 output_summary=f"exception: {type(exc).__name__}",
                 duration_ms=duration_ms, status="exception",
@@ -152,15 +166,20 @@ class NodeContext:
         duration_ms = (time.time() - t0) * 1000
         output_summary = self._make_output_summary(result)
         self._cp.put_activity(self.thread_id, self.node, self.step,
-                              key, result, "success")
+                              activity_key, result, "success")
         self._cp.log_tool_call(
             self.thread_id, self.node, self.step,
-            tool_name=key, activity_key=key,
+            tool_name=key, activity_key=activity_key,
             input_summary=input_summary,
             output_summary=output_summary,
             duration_ms=duration_ms, status="success",
         )
         return result
+
+    def _activity_key(self, key: str) -> str:
+        if not self.instance_id or self.instance_id == self.node:
+            return key
+        return f"{self.instance_id}:{key}"
 
     @staticmethod
     def _make_output_summary(result: Any) -> str:
@@ -186,6 +205,12 @@ class _Node:
     fn: NodeFn
     retries: int = 0           # 失败重试次数（不含首次）
     retry_backoff: float = 0.0  # 重试间隔秒
+
+
+@dataclass
+class _Barrier:
+    sources: Tuple[str, ...]
+    target: str
 
 
 @dataclass
@@ -223,6 +248,7 @@ class StateGraph:
         self.max_steps = max_steps
         self._nodes: Dict[str, _Node] = {}
         self._edges: Dict[str, List[str]] = {}           # 静态边：node -> [下游节点]
+        self._barriers: List[_Barrier] = []              # 多源 barrier：sources -> target
         self._cond: Dict[str, RouterFn] = {}             # 条件边：node -> 路由函数
         self._entry: List[str] = []
 
@@ -235,8 +261,14 @@ class StateGraph:
         self._nodes[name] = _Node(name, fn, retries, retry_backoff)
         return self
 
-    def add_edge(self, src: str, dst: str) -> "StateGraph":
+    def add_edge(self, src: Any, dst: str) -> "StateGraph":
         """静态边。src=START 表示入口节点。"""
+        if isinstance(src, (list, tuple)):
+            sources = tuple(str(s) for s in src)
+            if not sources:
+                raise ValueError("barrier 边至少需要一个源节点")
+            self._barriers.append(_Barrier(sources, dst))
+            return self
         if src == START:
             self._entry.append(dst)
         else:
@@ -244,16 +276,20 @@ class StateGraph:
         return self
 
     def add_conditional_edges(self, src: str, router: RouterFn) -> "StateGraph":
-        """条件边：router(state) 返回下一个节点名，或节点名列表（扇出），或 END。"""
+        """条件边：router(state) 返回节点名、Send、列表，或 END。"""
         self._cond[src] = router
         return self
 
     def compile(self, checkpointer: Optional[Checkpointer] = None) -> "CompiledGraph":
         # 基本校验：引用的节点都存在
         referenced = set(self._entry)
+        referenced.update(self._edges.keys())
         for outs in self._edges.values():
             referenced.update(outs)
         referenced.update(self._cond.keys())
+        for barrier in self._barriers:
+            referenced.update(barrier.sources)
+            referenced.add(barrier.target)
         for n in referenced:
             if n != END and n not in self._nodes:
                 raise ValueError(f"边引用了未定义的节点：{n}")
@@ -291,10 +327,25 @@ class StateGraph:
 
         # 3) 静态边不能引用未定义节点
         for src, outs in self._edges.items():
+            if src not in self._nodes:
+                issues.append(ValidationIssue(
+                    "error", f"边引用了未定义节点: {src}", node=src))
             for dst in outs:
                 if dst != END and dst not in self._nodes:
                     issues.append(ValidationIssue(
                         "error", f"边引用了未定义节点: {src} -> {dst}", node=src))
+
+        for barrier in self._barriers:
+            for src in barrier.sources:
+                if src not in self._nodes:
+                    issues.append(ValidationIssue(
+                        "error", f"barrier 边引用了未定义源节点: {src}", node=src))
+            if barrier.target != END and barrier.target not in self._nodes:
+                issues.append(ValidationIssue(
+                    "error",
+                    f"barrier 边引用了未定义目标节点: {barrier.target}",
+                    node=barrier.target,
+                ))
 
         # 4) BFS 可达性：所有节点必须能从入口走到
         # 条件边目标未知：尽量用 AST 提取的字符串字面量作为可能目标集，
@@ -307,6 +358,9 @@ class StateGraph:
                 continue
             reachable.add(n)
             for out in self._edges.get(n, []):
+                if out not in reachable and out != END and out in self._nodes:
+                    queue.append(out)
+            for out in self._barrier_targets_from(n):
                 if out not in reachable and out != END and out in self._nodes:
                     queue.append(out)
             if n in self._cond:
@@ -326,8 +380,9 @@ class StateGraph:
         queue = deque()
         for n in self._nodes:
             outs = self._edges.get(n, [])
+            barrier_outs = self._barrier_targets_from(n)
             # 静态边连到 END、没有任何出边、或者有条件边，都算「可能到 END」
-            if END in outs or not outs or n in self._cond:
+            if END in outs or END in barrier_outs or (not outs and not barrier_outs) or n in self._cond:
                 queue.append(n)
                 reaches_end.add(n)
         # 反向传播：任何节点能走到 reaches_end 中的节点，自己也算
@@ -335,6 +390,9 @@ class StateGraph:
         for src, outs in self._edges.items():
             for o in outs:
                 incoming.setdefault(o, []).append(src)
+        for barrier in self._barriers:
+            for src in barrier.sources:
+                incoming.setdefault(barrier.target, []).append(src)
         while queue:
             n = queue.popleft()
             for src in incoming.get(n, []):
@@ -451,6 +509,9 @@ class StateGraph:
             visit(root)
         return literals
 
+    def _barrier_targets_from(self, node: str) -> List[str]:
+        return [b.target for b in self._barriers if node in b.sources]
+
     def _has_cycle(self) -> bool:
         """DFS 检测静态边中的环。条件边不参与（无法静态判定）。"""
         WHITE, GRAY, BLACK = 0, 1, 2
@@ -458,7 +519,7 @@ class StateGraph:
 
         def dfs(n: str) -> bool:
             color[n] = GRAY
-            for out in self._edges.get(n, []):
+            for out in self._edges.get(n, []) + self._barrier_targets_from(n):
                 if out == END or out not in self._nodes:
                     continue
                 if color[out] == GRAY:
@@ -492,6 +553,10 @@ class StateGraph:
         for src, outs in self._edges.items():
             for dst in outs:
                 lines.append(f"    {safe(src)} --> {safe(dst)}")
+        for barrier in self._barriers:
+            label = "barrier"
+            for src in barrier.sources:
+                lines.append(f"    {safe(src)} -->|{label}| {safe(barrier.target)}")
 
         # 入口边（add_edge(START, ...) 不在 self._edges 里）
         for dst in self._entry:
@@ -513,9 +578,16 @@ class StateGraph:
     def _successors(self, node: str, state: Dict[str, Any]) -> List[str]:
         if node in self._cond:
             out = self._cond[node](state)
-            outs = out if isinstance(out, list) else [out]
-            return [o for o in outs if o and o != END]
-        return [o for o in self._edges.get(node, []) if o != END]
+            outs = out if isinstance(out, (list, tuple)) else [out]
+            names = []
+            for o in outs:
+                if isinstance(o, Send):
+                    names.append(o.node)
+                elif o and o != END:
+                    names.append(o)
+            return names
+        return [o for o in self._edges.get(node, []) + self._barrier_targets_from(node)
+                if o != END]
 
     def _reaches_end(self, node: str, state: Dict[str, Any]) -> bool:
         """节点是否显式指向 END（条件边返回 END 或静态边连到 END）。"""
@@ -524,9 +596,10 @@ class StateGraph:
             outs = out if isinstance(out, list) else [out]
             return END in outs or len(self._successors(node, state)) == 0
         edges = self._edges.get(node, [])
-        if not edges:
+        barrier_edges = self._barrier_targets_from(node)
+        if not edges and not barrier_edges:
             return True  # 无出边 = 汇点，视作到达 END
-        return END in edges
+        return END in edges or END in barrier_edges
 
 
 class CompiledGraph:
@@ -536,6 +609,155 @@ class CompiledGraph:
         self.g = g
         self.cp = checkpointer
         self._pool = ThreadPoolExecutor(max_workers=8)
+
+    @staticmethod
+    def _node_item(node: str, instance_id: Optional[str] = None,
+                   arg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return {
+            "kind": "node",
+            "node": node,
+            "instance_id": instance_id or node,
+            "arg": dict(arg or {}),
+        }
+
+    @staticmethod
+    def _barrier_item(sources: Tuple[str, ...], target: str,
+                      ready: Optional[List[str]] = None) -> Dict[str, Any]:
+        return {
+            "kind": "barrier",
+            "sources": list(sources),
+            "target": target,
+            "ready": list(ready or []),
+        }
+
+    def _normalize_frontier(self, frontier: List[Any]) -> List[Dict[str, Any]]:
+        items = []
+        for item in frontier:
+            if isinstance(item, str):
+                items.append(self._node_item(item))
+                continue
+            if isinstance(item, dict):
+                kind = item.get("kind", "node")
+                if kind == "barrier":
+                    items.append({
+                        "kind": "barrier",
+                        "sources": list(item.get("sources", [])),
+                        "target": item.get("target"),
+                        "ready": list(item.get("ready", [])),
+                    })
+                else:
+                    node = item.get("node")
+                    items.append(self._node_item(
+                        node,
+                        item.get("instance_id") or node,
+                        item.get("arg") or {},
+                    ))
+        return items
+
+    @staticmethod
+    def _item_key(item: Dict[str, Any]) -> str:
+        if item.get("kind") == "barrier":
+            sources = ",".join(item.get("sources", []))
+            ready = ",".join(sorted(item.get("ready", [])))
+            return f"barrier:{sources}->{item.get('target')}:{ready}"
+        return f"node:{item.get('node')}:{item.get('instance_id')}"
+
+    @staticmethod
+    def _item_label(item: Dict[str, Any]) -> str:
+        if item.get("kind") == "barrier":
+            return "barrier:{}->{} ready={}".format(
+                ",".join(item.get("sources", [])),
+                item.get("target"),
+                item.get("ready", []),
+            )
+        node = item.get("node")
+        instance_id = item.get("instance_id")
+        if instance_id and instance_id != node:
+            return f"{node}#{instance_id}"
+        return str(node)
+
+    def _dedupe_items(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        seen: Set[str] = set()
+        out = []
+        for item in items:
+            key = self._item_key(item)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+        return out
+
+    def _resolve_barriers(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        nodes = []
+        barriers: Dict[Tuple[Tuple[str, ...], str], Set[str]] = {}
+        for item in items:
+            if item.get("kind") != "barrier":
+                nodes.append(item)
+                continue
+            sources = tuple(item.get("sources", []))
+            target = item.get("target")
+            key = (sources, target)
+            ready = barriers.setdefault(key, set())
+            ready.update(item.get("ready", []))
+
+        pending = []
+        ready_nodes = []
+        for (sources, target), ready in barriers.items():
+            if set(sources).issubset(ready):
+                if target and target != END:
+                    ready_nodes.append(self._node_item(target))
+            else:
+                pending.append(self._barrier_item(sources, target, sorted(ready)))
+        return pending + nodes + ready_nodes
+
+    @staticmethod
+    def _stable_hash(value: Any) -> str:
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+
+    def _send_to_item(self, source_item: Dict[str, Any], send: Send,
+                      step: int, index: int) -> Dict[str, Any]:
+        if send.node not in self.g._nodes:
+            raise ValueError(f"Send 指向未定义节点: {send.node}")
+        identity = send.key if send.key is not None else {
+            "step": step,
+            "index": index,
+            "arg": send.arg,
+        }
+        raw = {
+            "source": source_item.get("instance_id"),
+            "target": send.node,
+            "identity": identity,
+        }
+        instance_id = f"{send.node}:{self._stable_hash(raw)}"
+        return self._node_item(send.node, instance_id, send.arg)
+
+    def _successor_items(self, item: Dict[str, Any], state: Dict[str, Any],
+                         step: int) -> List[Dict[str, Any]]:
+        node = item["node"]
+        barrier_items = [
+            self._barrier_item(barrier.sources, barrier.target, [node])
+            for barrier in self.g._barriers
+            if node in barrier.sources
+        ]
+        if node in self.g._cond:
+            out = self.g._cond[node](state)
+            outs = out if isinstance(out, (list, tuple)) else [out]
+            items = []
+            for index, value in enumerate(outs):
+                if not value or value == END:
+                    continue
+                if isinstance(value, Send):
+                    items.append(self._send_to_item(item, value, step, index))
+                else:
+                    target = str(value)
+                    if target not in self.g._nodes:
+                        raise ValueError(f"条件边返回未定义节点: {target}")
+                    items.append(self._node_item(target))
+            return items + barrier_items
+
+        items = [self._node_item(o) for o in self.g._edges.get(node, []) if o != END]
+        return items + barrier_items
 
     def invoke(self, initial_state: Dict[str, Any], thread_id: Optional[str] = None,
                command: Optional[Command] = None) -> RunResult:
@@ -551,15 +773,17 @@ class CompiledGraph:
         if prev and prev.status in ("interrupted", "failed"):
             # —— 恢复路径 —— state 与 frontier 都来自 checkpoint，绝不回放已完成节点
             state = prev.state
-            frontier = list(prev.frontier)
+            frontier = self._normalize_frontier(list(prev.frontier))
             step = prev.step
-            resume_for = {n: (command.resume if command else None)
-                          for n in frontier} if prev.status == "interrupted" else {}
+            resume_for = {
+                self._item_key(n): (command.resume if command else None)
+                for n in frontier if n.get("kind") == "node"
+            } if prev.status == "interrupted" else {}
             self.cp.log_event(thread_id, "resume",
                               {"from_step": step, "frontier": frontier})
         else:
             state = self.g.schema.merge({}, initial_state)
-            frontier = list(self.g._entry)
+            frontier = [self._node_item(n) for n in self.g._entry]
             step = 0
             resume_for = {}
             self.cp.log_event(thread_id, "start", {"entry": frontier})
@@ -568,54 +792,89 @@ class CompiledGraph:
         return self._run_loop(thread_id, state, frontier, step, resume_for)
 
     # —— 主循环：每轮跑完一个 super-step —— #
-    def _run_loop(self, thread_id: str, state: Dict[str, Any], frontier: List[str],
+    def _run_loop(self, thread_id: str, state: Dict[str, Any], frontier: List[Any],
                   step: int, resume_for: Dict[str, Any]) -> RunResult:
+        frontier = self._dedupe_items(self._resolve_barriers(
+            self._normalize_frontier(frontier)
+        ))
         while frontier:
             if step >= self.g.max_steps:
                 self.cp.put(Checkpoint(thread_id, step, state, frontier, "failed"))
                 return RunResult(thread_id, "failed", state, step,
                                  error=f"超过 max_steps={self.g.max_steps}（可能存在死循环）")
+            waiting = [i for i in frontier if i.get("kind") == "barrier"]
+            executable = [i for i in frontier if i.get("kind") == "node"]
+            if not executable:
+                self.cp.put(Checkpoint(thread_id, step, state, frontier, "failed"))
+                return RunResult(
+                    thread_id, "failed", state, step,
+                    error="barrier 等待的源节点无法继续执行",
+                )
             step += 1
-            # 去重：同一 super-step 内一个节点只跑一次
-            batch = list(dict.fromkeys(frontier))
-            self.cp.log_event(thread_id, "superstep", {"step": step, "nodes": batch})
+            batch = self._dedupe_items(executable)
+            current_frontier = waiting + batch
+            self.cp.log_event(
+                thread_id,
+                "superstep",
+                {"step": step, "nodes": [self._item_label(i) for i in batch]},
+            )
 
             # 1) 并行执行本批节点，收集各自的 partial update
-            futures = {
-                self._pool.submit(self._exec_node, thread_id, self.g._nodes[n],
-                                  state, step, resume_for.get(n, _MISSING)): n
-                for n in batch
-            }
+            futures = {}
+            for item in batch:
+                fut = self._pool.submit(
+                    self._exec_node,
+                    thread_id,
+                    self.g._nodes[item["node"]],
+                    item,
+                    state,
+                    step,
+                    resume_for.get(self._item_key(item), _MISSING),
+                )
+                futures[fut] = item
             updates: Dict[str, Dict[str, Any]] = {}
             for fut in futures:
-                node = futures[fut]
+                item = futures[fut]
+                node = item["node"]
+                item_key = self._item_key(item)
                 outcome = fut.result()
                 if outcome["kind"] == "interrupt":
                     # 任一节点请求人工介入：存盘暂停，frontier 保留未完成的整批
-                    self.cp.put(Checkpoint(thread_id, step - 1, state, batch,
+                    self.cp.put(Checkpoint(thread_id, step - 1, state, current_frontier,
                                            "interrupted", outcome["payload"]))
                     self.cp.log_event(thread_id, "interrupt",
-                                      {"node": node, "payload": outcome["payload"]})
+                                      {"node": node,
+                                       "instance_id": item.get("instance_id"),
+                                       "payload": outcome["payload"]})
                     return RunResult(thread_id, "interrupted", state, step - 1,
                                      interrupt_payload=outcome["payload"])
                 if outcome["kind"] == "error":
-                    self.cp.put(Checkpoint(thread_id, step - 1, state, batch, "failed"))
+                    self.cp.put(Checkpoint(
+                        thread_id, step - 1, state, current_frontier, "failed"
+                    ))
                     self.cp.log_event(thread_id, "error",
-                                      {"node": node, "error": outcome["error"]})
+                                      {"node": node,
+                                       "instance_id": item.get("instance_id"),
+                                       "error": outcome["error"]})
                     return RunResult(thread_id, "failed", state, step - 1,
                                      error=f"{node}: {outcome['error']}")
-                updates[node] = outcome["update"] or {}
+                updates[item_key] = outcome["update"] or {}
             resume_for = {}  # resume 值只对恢复后的第一个 super-step 有效
 
             # 2) 合并所有 update（顺序按 batch，确保确定性）
-            for n in batch:
-                state = self.g.schema.merge(state, updates[n])
+            for item in batch:
+                state = self.g.schema.merge(state, updates[self._item_key(item)])
 
             # 3) 计算下一批 frontier
-            next_frontier: List[str] = []
-            for n in batch:
-                next_frontier.extend(self.g._successors(n, state))
-            frontier = list(dict.fromkeys(next_frontier))
+            next_frontier: List[Dict[str, Any]] = list(waiting)
+            try:
+                for item in batch:
+                    next_frontier.extend(self._successor_items(item, state, step))
+            except Exception as exc:  # noqa: BLE001 — router/Send 错误需转成运行失败
+                self.cp.put(Checkpoint(thread_id, step, state, next_frontier, "failed"))
+                self.cp.log_event(thread_id, "error", {"error": str(exc)})
+                return RunResult(thread_id, "failed", state, step, error=str(exc))
+            frontier = self._dedupe_items(self._resolve_barriers(next_frontier))
 
             # 4) 落盘本 super-step 的 checkpoint
             status = "running" if frontier else "completed"
@@ -625,23 +884,32 @@ class CompiledGraph:
         return RunResult(thread_id, "completed", state, step)
 
     # —— 单节点执行：含重试与 interrupt 捕获 —— #
-    def _exec_node(self, thread_id: str, node: _Node, state: Dict[str, Any],
-                   step: int, resume_value: Any) -> Dict[str, Any]:
+    def _exec_node(self, thread_id: str, node: _Node, item: Dict[str, Any],
+                   state: Dict[str, Any], step: int,
+                   resume_value: Any) -> Dict[str, Any]:
         attempt = 0
+        run_state = state
+        if item.get("arg"):
+            run_state = copy.deepcopy(state)
+            run_state.update(copy.deepcopy(item.get("arg") or {}))
         while True:
             ctx = NodeContext(node.name, step, attempt, resume_value,
-                                thread_id, self.cp)
+                              thread_id, self.cp, item.get("instance_id") or node.name)
             try:
-                update = node.fn(state, ctx)
+                update = node.fn(run_state, ctx)
                 self.cp.log_event(thread_id, "node_ok",
-                                  {"node": node.name, "attempt": attempt})
+                                  {"node": node.name,
+                                   "instance_id": item.get("instance_id"),
+                                   "attempt": attempt})
                 return {"kind": "ok", "update": update}
             except Interrupt as it:
                 return {"kind": "interrupt", "payload": it.payload}
             except Exception as exc:  # noqa: BLE001 — 引擎需兜住任意节点异常
                 if attempt < node.retries:
                     self.cp.log_event(thread_id, "node_retry",
-                                      {"node": node.name, "attempt": attempt,
+                                      {"node": node.name,
+                                       "instance_id": item.get("instance_id"),
+                                       "attempt": attempt,
                                        "error": str(exc)})
                     attempt += 1
                     resume_value = _MISSING  # 重试不复用 resume
