@@ -1112,3 +1112,157 @@ commit `3b6da1b` 相对 `origin/master` 的修复 diff：
 ### 最终结论
 
 PASS。`3b6da1b` 已修复 `conditional_edges.from` 未校验源节点的 P1 缺陷，三层防线（config 构建、validate、compile）均生效，未发现 checkpoint/resume invariant、Python 3.7 兼容性或 demo 回归。建议 PM 可进入状态文档更新与同步流程。
+
+## P2-1 Send/Worker CR — codex/p2-send-worker（2026-06-20）
+
+### 结论
+
+**FAIL。** 指定检查命令全部通过，但独立 CR 在 Send worker + interrupt/resume 路径发现违反项目硬不变量的问题：同一 Send worker super-step 中，某个 worker 中断时，已经完成的同批 worker 会在 resume 后被重跑。该问题会导致非幂等 worker 的副作用重复执行，且与 AGENTS.md / checkpoint 设计中的“resume never replays completed nodes / 已完成节点绝不重跑”不一致。
+
+### 已执行检查
+
+- `git diff --check master..HEAD`：PASS。
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /Users/ospacer/.py37/bin/python -m pytest test/ -q -p no:cacheprovider`：PASS，`154 passed in 3.29s`。
+- `PYTHONDONTWRITEBYTECODE=1 PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh`：PASS，Python `3.7.17`，脚本内全量测试与 demo 均通过。
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /Users/ospacer/.py37/bin/python demo.py`：PASS，8 个场景全部执行完毕。
+
+### 审查范围与重点结论
+
+- 已读取 `AGENTS.md`、`docs/plan-p2.md`、`docs/review-checklist-p2-send.md`。
+- 已查看 `git diff master..HEAD`。本分支当前为 `codex/p2-send-worker`，HEAD 为 `9475b29 docs: record P2 send PM handoff`，核心实现提交为 `da67cee feat: add dynamic Send worker execution`。
+- 动态 Send 基本行为、`Send.arg` 注入隔离、`fanout_reducer`、JSON `fanout` reducer 与多源 barrier 基本路径在现有测试/demo 中通过；但 checkpoint resume 中断路径未满足硬不变量。
+
+### Findings
+
+#### P1：Send worker 批次中断后，已完成的同批 worker 会在 resume 后重跑
+
+**位置**：`agentflow/graph.py`，`CompiledGraph._run_loop()` interrupt 处理路径。
+
+当前 super-step 并行执行 `batch` 后按 `futures` 插入顺序取结果。一旦某个 future 返回 `interrupt`，实现会把 `current_frontier = waiting + batch` 整批写入 checkpoint，并直接返回 interrupted：
+
+- checkpoint state 仍是本轮执行前的 state；
+- frontier 包含整个 batch；
+- 该 batch 中在 interrupt 之前已经完成且产生副作用/日志/activity 的 worker 没有从 frontier 中移除；
+- resume 时会从 checkpoint frontier 重跑整批 worker。
+
+这对普通静态并行节点也可能存在，但 P2 Send/worker 让同名动态 worker 批量执行成为核心路径，因此此分支必须明确处理或文档化并规避。按本仓库硬约束“frontier only contains nodes yet to run / resume never replays completed nodes”，当前行为应视为阻塞合并的问题。
+
+**复现方式**（临时脚本执行，不修改实现代码）：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /Users/ospacer/.py37/bin/python - <<'PY'
+from __future__ import print_function
+import time
+from collections import Counter
+from agentflow import StateGraph, StateSchema, START, Send, Checkpointer, Command, append_reducer
+
+calls = Counter()
+
+def start(state, ctx):
+    return {"items": [1, 2]}
+
+def route(state):
+    return [Send("worker", {"item": 1}, key="one"), Send("worker", {"item": 2}, key="two")]
+
+def worker(state, ctx):
+    item = state["item"]
+    calls[item] += 1
+    if item == 1:
+        time.sleep(0.2)  # 让 item=2 先完成
+        ctx.interrupt({"item": item, "calls_snapshot": dict(calls)})
+    return {"seen": [item]}
+
+g = StateGraph(StateSchema(reducers={"seen": append_reducer}))
+g.add_node("start", start)
+g.add_node("worker", worker)
+g.add_edge(START, "start")
+g.add_conditional_edges("start", route)
+app = g.compile(Checkpointer())
+
+r1 = app.invoke({}, thread_id="cr-send-interrupt-rerun")
+print("r1", r1.status, r1.interrupt_payload, "calls", dict(calls))
+r2 = app.invoke({}, thread_id="cr-send-interrupt-rerun", command=Command(resume="ok"))
+print("r2", r2.status, r2.state, "calls", dict(calls))
+PY
+```
+
+**实际输出**：
+
+```text
+r1 interrupted {'item': 1, 'calls_snapshot': {1: 1, 2: 1}} calls {1: 1, 2: 1}
+r2 completed {'items': [1, 2], 'seen': [1, 2]} calls {1: 2, 2: 2}
+```
+
+`item=2` 在第一次返回 interrupted 前已经执行过一次，resume 后又执行一次；`item=1` 也因恢复中断节点而执行第二次。`seen` 只记录恢复后的结果，是因为 interrupt checkpoint 保存的是旧 state，无法反映已完成 sibling 的 update。
+
+**建议修复**：
+
+- 在 interrupt/error 处理时，区分 batch 内已完成且已成功的 item 与尚未完成/中断的 item；checkpoint frontier 只保留未完成或需要 resume 的 item，避免已完成 item 重跑。
+- 若要保留“super-step 原子提交”语义，则需要明确禁止/取消同 batch sibling 在 interrupt 时产生不可回滚副作用，并在文档与测试中声明；但这会弱化当前项目硬不变量，不建议作为 P2-1 合并方案。
+- 增加回归测试：Send router 产生两个 worker，其中一个延迟后 interrupt，另一个先完成；断言 resume 后先完成 worker 的调用计数仍为 1，且 checkpoint frontier 不包含已完成 worker。
+
+### 补充观察（非阻塞）
+
+- 重复 Send key：`[Send("w", {"id": 1}, key="x"), Send("w", {"id": 2}, key="x")]` 不 crash，但两个 Send 生成相同 `instance_id` 后被 `_dedupe_items()` 去重，实际只执行第一个 worker，最终状态为 `{'seen': 1}`。清单要求“至少不能 crash”，当前满足；建议后续文档明确重复 key 语义，或在开发模式给出 warning/error。
+- barrier 等待项会以 frontier dict 形式持久化，JSON checkpoint 可序列化；现有 strict barrier 与 JSON barrier 测试覆盖基本路径。
+- `Send.arg` 不自动写回全局 state，worker 通过 reducer 返回 update 合并；现有测试覆盖该行为。
+- `graph_config.py` 仍通过显式 registry 解析 node/router/reducer，没有引入 JSON 动态 import/eval。
+
+### 最终结论
+
+**FAIL。** P1 × 1：Send/worker 中断恢复路径会重跑同批已完成 worker，违反 checkpoint/resume “已完成节点不重跑”硬不变量。建议 Dev 修复并新增上述回归测试后再提交 CR 复验；PM 不应合并当前分支。
+
+## P2-1 Send/Worker CR 复验 — 220066b（2026-06-20）
+
+### 结论
+
+**PASS。** 最新提交 `220066b fix: avoid rerunning completed send workers on resume` 已修复上一轮 P1：Send worker 批次中断后，已完成 sibling worker 不再在 resume 后重跑。PM 可进入合并确认流程。
+
+### 已执行检查
+
+- `git diff --check master..HEAD`：PASS，无输出。
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /Users/ospacer/.py37/bin/python -m pytest test/test_send.py test/test_invariants.py -q -p no:cacheprovider`：PASS，`12 passed in 0.47s`。
+- `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /Users/ospacer/.py37/bin/python -m pytest test/ -q -p no:cacheprovider`：PASS，`155 passed in 3.91s`。
+- `PYTHONDONTWRITEBYTECODE=1 PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh`：PASS，Python `3.7.17`；脚本内 py37 兼容性、不变量、activity、graph、planner、Send/worker、review、tools、coder、debugger 与 8 个 demo 场景均通过。
+
+### 复验范围
+
+- 已阅读 `AGENTS.md`，确认 checkpoint/resume 硬不变量：frontier 只包含尚未执行节点，resume 不应重放已完成节点。
+- 已阅读 `docs/review-notes.md` 末尾上一轮 `P2-1 Send/Worker CR — codex/p2-send-worker（2026-06-20）` 的 FAIL 记录。
+- 已查看 `git diff HEAD~1..HEAD`：实现改动集中在 `agentflow/graph.py`，测试改动集中在 `test/test_send.py`。
+
+### 重点复验结果
+
+1. 快 worker 不再重跑：PASS
+
+使用上一轮 CR 复现脚本的等价脚本验证：第一次运行中 `item=2` 快 worker 已完成并写入 `seen`；resume 后调用计数保持 `item=2: 1`，未再次执行。中断 worker `item=1` 因注入 `Command(resume="ok")` 正常恢复执行第二次。
+
+复验输出摘要：
+
+```text
+r1 interrupted {'items': [1, 2], 'seen': ['fast:2']} ... calls {1: 1, 2: 1}
+frontier [{'kind': 'node', 'node': 'worker', 'instance_id': 'worker:3f7c3847e0c9', 'arg': {'item': 1}}]
+r2 completed {'items': [1, 2], 'seen': ['fast:2', 'slow:ok']} calls {1: 2, 2: 1}
+```
+
+2. checkpoint frontier 不含已完成 sibling：PASS
+
+中断 checkpoint 的 frontier 仅保留慢 worker：`{'arg': {'item': 1}}`。已完成的快 worker `{'item': 2}` 已从 resume frontier 移除，符合“frontier only contains nodes yet to run”。
+
+3. 最终 state 保留已完成 sibling update 与中断 worker 恢复 update：PASS
+
+第一次 interrupted 返回的 state 已包含快 worker update：`seen == ['fast:2']`；resume 完成后的最终 state 为 `seen == ['fast:2', 'slow:ok']`，既保留已完成 sibling 的 partial commit，也合并了中断 worker 恢复后的 update。
+
+4. 合并顺序与现有不变量：PASS
+
+修复在 interrupt 路径按原 batch 顺序合并成功 sibling updates，而不是按完成顺序合并；目标测试、全量 pytest、`test/test_invariants.py` 与 py37 全量验证均通过，未发现既有 no-rerun invariant 回归。
+
+### Findings
+
+- P0：无。
+- P1：无。
+- P2：无。
+
+### 最终结论
+
+**PASS。** `220066b` 已修复 Send/worker 中断恢复路径重跑已完成 sibling worker 的 P1 问题，并新增 `test_send_interrupt_commits_completed_sibling_without_rerun` 回归测试覆盖快 worker 不重跑、checkpoint frontier 排除已完成 sibling、最终 state 保留两侧 update。PM 可进入合并确认流程。

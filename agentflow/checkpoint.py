@@ -21,7 +21,7 @@ class Checkpoint:
     thread_id: str
     step: int
     state: Dict[str, Any]
-    frontier: List[str]          # 下一个 super-step 要执行的节点
+    frontier: List[Any]          # 下一个 super-step 要执行的 frontier item
     status: str                  # running | interrupted | completed | failed
     interrupt_payload: Any = None
     ts: float = 0.0
@@ -81,7 +81,8 @@ class Checkpointer:
         )
         self._conn.commit()
 
-        # —— activity 缓存：以 (thread_id, node, step, activity_key) 为键缓存 LLM 等调用 —— #
+        # —— activity 缓存：以 (thread_id, node, step, activity_key) 为键缓存 LLM 等调用。
+        # Send worker 的 instance_id 由 NodeContext 自动并入 activity_key。 —— #
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS activity_results (

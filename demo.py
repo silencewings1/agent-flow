@@ -9,6 +9,7 @@
   场景 3 — 错误重试（节点前几次抛错、自动重试后成功）
   场景 4 — 时间旅行（打印 checkpoint 历史与事件日志）
   场景 5 — 每节点 LLM 配置（展示各节点解析到的 provider/model）
+  场景 8 — 动态 Send/worker（router 动态生成多个同名 worker 实例）
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from agentflow import (
     Checkpointer,
     Command,
     LLMRegistry,
+    Send,
     END,
     build_graph_from_config,
     load_graph_config,
@@ -54,6 +56,39 @@ def worker_w3(state, ctx):
 
 def join(state, ctx):
     return {"log": [f"[join] 汇聚 {len(state['artifacts'])} 个产物: {state['artifacts']}"]}
+
+
+def dynamic_split(state, ctx):
+    tasks = state.get("tasks") or [
+        {"id": "api", "title": "实现 API"},
+        {"id": "tests", "title": "补测试"},
+        {"id": "docs", "title": "写文档"},
+    ]
+    return {
+        "dynamic_tasks": tasks,
+        "log": [f"[dynamic_split] 动态生成 {len(tasks)} 个 worker"],
+    }
+
+
+def route_dynamic_sends(state):
+    return [
+        Send("dynamic_worker", {"task": task}, key=task["id"])
+        for task in state.get("dynamic_tasks", [])
+    ]
+
+
+def dynamic_worker(state, ctx):
+    task = state["task"]
+    artifact = f"{task['id']}:{task['title']}"
+    return {
+        "fanout": {ctx.instance_id: artifact},
+        "log": [f"[dynamic_worker] {artifact}"],
+    }
+
+
+def dynamic_join(state, ctx):
+    values = sorted(state.get("fanout", {}).values())
+    return {"log": [f"[dynamic_join] 汇聚 {len(values)} 个动态产物: {values}"]}
 
 
 def flaky(state, ctx):
@@ -94,6 +129,9 @@ def demo_node_registry():
         "w2": worker_w2,
         "w3": worker_w3,
         "join": join,
+        "dynamic_split": dynamic_split,
+        "dynamic_worker": dynamic_worker,
+        "dynamic_join": dynamic_join,
         "flaky": flaky,
         "dummy_coder_fix_test": dummy_coder_fix_test,
     }
@@ -104,6 +142,7 @@ def demo_router_registry():
         "route_after_debug": route_after_debug,
         "route_after_human_review": route_after_human_review,
         "route_after_debug_to_end": route_after_debug_to_end,
+        "route_dynamic_sends": route_dynamic_sends,
     }
 
 
@@ -161,7 +200,7 @@ def scenario_pipeline() -> None:
 
 
 def scenario_parallel() -> None:
-    banner("场景 2 — 并行扇出：同一 super-step 内多节点并发")
+    banner("场景 2 — 并行扇出：同一 super-step 内多节点并发 + barrier 汇聚")
     cp = Checkpointer()
     app = build_configured_graph("parallel", cp)
     res = app.invoke({"artifacts": []}, thread_id="fanout")
@@ -319,6 +358,18 @@ def scenario_real_debugger() -> None:
     shutil.rmtree(workdir, ignore_errors=True)
 
 
+def scenario_dynamic_send() -> None:
+    banner("场景 8 — 动态 Send/worker：router 动态生成同名 worker 实例")
+    cp = Checkpointer()
+    app = build_configured_graph("dynamic_send", cp)
+    res = app.invoke({}, thread_id="dynamic-send")
+    assert res.status == "completed"
+    print(f"\n→ status={res.status}, step={res.step}")
+    print(f"  fanout keys: {sorted(res.state.get('fanout', {}).keys())}")
+    for line in res.state.get("log", []):
+        print(f"    {line}")
+
+
 if __name__ == "__main__":
     scenario_pipeline()
     scenario_parallel()
@@ -327,4 +378,5 @@ if __name__ == "__main__":
     scenario_config()
     scenario_real_coder()
     scenario_real_debugger()
+    scenario_dynamic_send()
     print("\n✅ 全部场景执行完毕\n")

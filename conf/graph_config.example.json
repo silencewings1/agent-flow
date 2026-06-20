@@ -41,9 +41,7 @@
         ["split", "w1"],
         ["split", "w2"],
         ["split", "w3"],
-        ["w1", "join"],
-        ["w2", "join"],
-        ["w3", "join"],
+        {"from": ["w1", "w2", "w3"], "to": "join"},
         ["join", "END"]
       ],
       "conditional_edges": []
@@ -118,6 +116,26 @@
       ],
       "conditional_edges": [
         {"from": "debugger", "router": "route_after_debug_to_end"}
+      ]
+    },
+    "dynamic_send": {
+      "max_steps": 10,
+      "reducers": {
+        "log": "append",
+        "fanout": "fanout"
+      },
+      "nodes": {
+        "dynamic_split": {"fn": "dynamic_split"},
+        "dynamic_worker": {"fn": "dynamic_worker"},
+        "dynamic_join": {"fn": "dynamic_join"}
+      },
+      "edges": [
+        ["START", "dynamic_split"],
+        ["dynamic_worker", "dynamic_join"],
+        ["dynamic_join", "END"]
+      ],
+      "conditional_edges": [
+        {"from": "dynamic_split", "router": "route_dynamic_sends"}
       ]
     }
   }

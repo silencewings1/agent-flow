@@ -11,8 +11,8 @@ import math
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 from .checkpoint import Checkpointer
-from .graph import END, START, CompiledGraph, RouterFn, StateGraph, ValidationIssue
-from .state import StateSchema, append_reducer, overwrite_reducer
+from .graph import END, START, CompiledGraph, RouterFn, Send, StateGraph, ValidationIssue
+from .state import StateSchema, append_reducer, fanout_reducer, overwrite_reducer
 
 
 NodeRegistry = Mapping[str, Callable[..., Any]]
@@ -20,6 +20,7 @@ RouterRegistry = Mapping[str, RouterFn]
 
 _REDUCERS = {
     "append": append_reducer,
+    "fanout": fanout_reducer,
     "overwrite": overwrite_reducer,
 }
 
@@ -46,7 +47,8 @@ def build_graph_from_config(
       or [{"name": "...", "handler": "...", "retries": 0, ...}, ...].
       "fn" is an alias for "handler"; a plain string node is shorthand for
       {"name": value, "handler": value}.
-    - edges: [["START", "node"], {"from": "node", "to": "END"}, ...]
+    - edges: [["START", "node"], {"from": "node", "to": "END"},
+      {"from": ["a", "b"], "to": "join"}, ...]
     - conditional_edges: [{"from": "node", "router": "route_name"}, ...]
     """
     g = build_state_graph_from_config(config, graph_name, node_registry, router_registry)
@@ -102,7 +104,10 @@ def build_state_graph_from_config(
 
     for index, edge_spec in enumerate(_parse_list_field(spec, graph_name, "edges")):
         src, dst = _parse_edge(edge_spec, graph_name, index)
-        g.add_edge(_alias_node(src), _alias_node(dst))
+        if isinstance(src, list):
+            g.add_edge([_alias_node(s) for s in src], _alias_node(dst))
+        else:
+            g.add_edge(_alias_node(src), _alias_node(dst))
 
     for index, cond_spec in enumerate(
         _parse_list_field(spec, graph_name, "conditional_edges")
@@ -178,11 +183,18 @@ def _parse_node(raw: Any, graph_name: str) -> Dict[str, Any]:
     }
 
 
-def _parse_edge(raw: Any, graph_name: str, index: int) -> List[str]:
+def _parse_edge(raw: Any, graph_name: str, index: int) -> List[Any]:
     if isinstance(raw, (list, tuple)) and len(raw) == 2:
         return [str(raw[0]), str(raw[1])]
     if isinstance(raw, Mapping) and "from" in raw and "to" in raw:
-        return [str(raw["from"]), str(raw["to"])]
+        src = raw["from"]
+        if isinstance(src, list):
+            if not src:
+                raise ValueError(
+                    f"graph {graph_name} edges[{index}].from 至少需要一个源节点"
+                )
+            return [[str(s) for s in src], str(raw["to"])]
+        return [str(src), str(raw["to"])]
     raise ValueError(
         f"graph {graph_name} edges[{index}] 必须是 [from, to] 或 {{from, to}}"
     )
@@ -275,13 +287,18 @@ def _alias_node(name: str) -> str:
 
 
 def _wrap_router_aliases(router: RouterFn) -> RouterFn:
+    def alias_out(value: Any) -> Any:
+        if isinstance(value, Send):
+            return Send(_alias_node(value.node), value.arg, value.key)
+        if isinstance(value, str):
+            return _alias_node(value)
+        return value
+
     def wrapped(state: Dict[str, Any]) -> Any:
         out = router(state)
         if isinstance(out, (list, tuple)):
-            return [_alias_node(str(x)) if isinstance(x, str) else x for x in out]
-        if isinstance(out, str):
-            return _alias_node(out)
-        return out
+            return [alias_out(x) for x in out]
+        return alias_out(out)
 
     wrapped.__name__ = getattr(router, "__name__", "router")
     return wrapped

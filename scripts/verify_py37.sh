@@ -49,23 +49,27 @@ echo "=== 6. planner 测试 ==="
 PYTHONPATH=. $PY37 test/test_planner.py
 
 echo
-echo "=== 7. review 测试 ==="
+echo "=== 7. Send/worker 测试 ==="
+PYTHONPATH=. $PY37 test/test_send.py
+
+echo
+echo "=== 8. review 测试 ==="
 PYTHONPATH=. $PY37 test/test_review.py
 
 echo
-echo "=== 8. tools 测试 ==="
+echo "=== 9. tools 测试 ==="
 PYTHONPATH=. $PY37 test/test_tools.py
 
 echo
-echo "=== 9. coder 测试 ==="
+echo "=== 10. coder 测试 ==="
 PYTHONPATH=. $PY37 test/test_coder.py
 
 echo
-echo "=== 10. debugger 测试 ==="
+echo "=== 11. debugger 测试 ==="
 PYTHONPATH=. $PY37 test/test_debugger.py
 
 echo
-echo "=== 11. demo 跑测 ==="
+echo "=== 12. demo 跑测 ==="
 PYTHONPATH=. $PY37 demo.py
 
 echo
