@@ -30,3 +30,20 @@ PYTHONDONTWRITEBYTECODE=1 PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/ver
 ## Output
 
 Write review result to `docs/review-notes-demo-split.md` with PASS/FAIL and any findings.
+
+## Follow-up: demo README Checks
+
+- `demo/README.md` 存在于 `demo/` 目录内。
+- 文档说明 `python -m demo` 总入口和 `python demo.py` 兼容入口。
+- 文档覆盖全部 8 个场景文件：
+  - `demo_pipeline.py`
+  - `demo_parallel.py`
+  - `demo_retry.py`
+  - `demo_timetravel.py`
+  - `demo_llm_config.py`
+  - `demo_real_coder.py`
+  - `demo_real_debugger.py`
+  - `demo_dynamic_send.py`
+- 每个场景的命令与模块名一致，并可从仓库根目录运行。
+- 功能描述与对应 demo 实际行为一致。
+- 公共模块 `common.py`、`__main__.py`、`__init__.py` 的说明不误导。

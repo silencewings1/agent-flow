@@ -36,3 +36,24 @@ PYTHONDONTWRITEBYTECODE=1 PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/ver
 - Dev implementation: completed in current working tree.
 - PM smoke/full verification: completed locally, all commands passed.
 - CR: PASS recorded in `docs/review-notes-demo-split.md`. PM may commit after final status check.
+
+## Follow-up: demo README
+
+用户要求在 `demo/` 目录内增加说明文档，明确每个 `demo_xxx.py` 的用途和运行方式。
+
+### Scope
+
+- 新增 `demo/README.md`。
+- 文档需覆盖：
+  - `python -m demo` 总入口。
+  - `python demo.py` 兼容入口。
+  - 每个 `demo_xxx.py` 的单独运行命令和功能说明。
+  - `common.py`、`__main__.py` 等公共模块说明。
+
+### Acceptance Criteria
+
+- `demo/README.md` 覆盖全部 8 个 demo 场景。
+- 每条运行命令可从仓库根目录执行。
+- 文档描述与实际 demo 文件职责一致。
+- 至少完成一次 smoke test，例如 `python -m demo.demo_dynamic_send`。
+- 经独立 CR PASS 后提交。

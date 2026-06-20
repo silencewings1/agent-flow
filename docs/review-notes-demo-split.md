@@ -73,3 +73,58 @@ PYTHONDONTWRITEBYTECODE=1 PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/ver
 ## 发现问题
 
 无。
+
+## Follow-up: demo README review
+
+日期：2026-06-20
+角色：独立 CR（代码审查及测试）
+范围：follow-up 文档改动：新增 `demo/README.md`，更新 `docs/plan-demo-split.md`、`docs/review-checklist-demo-split.md`
+
+### 结论
+
+PASS
+
+未发现 P0/P1/P2 问题。`demo/README.md` 覆盖全部 8 个 `demo_xxx.py`，各运行命令与模块名一致且按文档前置条件可从仓库根目录执行；功能描述与对应 demo 实际行为一致；已说明 `python -m demo` 总入口和 `python demo.py` 兼容入口；`common.py`、`__main__.py`、`__init__.py` 说明准确；未发现明显 Markdown/命令错误。
+
+### 静态审查
+
+- 覆盖完整性：README 表格覆盖 `demo_pipeline.py`、`demo_parallel.py`、`demo_retry.py`、`demo_timetravel.py`、`demo_llm_config.py`、`demo_real_coder.py`、`demo_real_debugger.py`、`demo_dynamic_send.py` 共 8 个场景。
+- 命令一致性：每行命令均为 `PYTHONPATH=. python -m demo.<模块名>`，与对应文件名一致；README 顶部要求从仓库根目录执行，并给出 `cd /Users/ospacer/cpp_test/agent-flow`。
+- 行为一致性：逐项对照 `demo/*.py` 与 `conf/graph_config.example.json`，场景描述与实际 runner/graph 行为一致，包括 pipeline HITL 恢复、parallel barrier join、retry event log、timetravel checkpoint history、LLM config 展示、real coder 落盘、real debugger pytest 回环、dynamic Send fanout 汇聚。
+- 入口说明：README 明确推荐 `PYTHONPATH=. python -m demo`，并说明 `PYTHONPATH=. python demo.py` 为兼容旧入口。
+- 公共模块说明：`common.py` 描述为公共节点/router/registry/构图/banner 输出，`__main__.py` 描述为 1 到 8 顺序总入口，`__init__.py` 描述为 package 标记，均准确。
+- Markdown/命令格式：表格、代码块、反引号和命令文本未见明显格式错误。
+
+### 命令结果
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /Users/ospacer/.py37/bin/python -m demo.demo_dynamic_send
+```
+
+结果：PASS（退出码 0）。关键输出：
+
+```text
+================================================================
+  场景 8 — 动态 Send/worker：router 动态生成同名 worker 实例
+================================================================
+
+→ status=completed, step=3
+  fanout keys: ['dynamic_worker:3a3c56322c59', 'dynamic_worker:5af600a11913', 'dynamic_worker:785e82288561']
+    [dynamic_split] 动态生成 3 个 worker
+    [dynamic_worker] api:实现 API
+    [dynamic_worker] tests:补测试
+    [dynamic_worker] docs:写文档
+    [dynamic_join] 汇聚 3 个动态产物: ['api:实现 API', 'docs:写文档', 'tests:补测试']
+```
+
+补充抽查：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. /Users/ospacer/.py37/bin/python -m demo.demo_real_debugger
+```
+
+结果：PASS（退出码 0）。用于核对 README 中“先写入失败测试，再通过 dummy coder 修复后跑通”的描述；输出显示第一次测试失败、`[Coder] 修复 v2`、第二次测试通过。
+
+### 问题列表
+
+无。
