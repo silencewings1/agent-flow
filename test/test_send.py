@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import time
 
 from agentflow import (
     Checkpointer,
@@ -177,18 +178,15 @@ def test_checkpoint_resume_keeps_send_instance_id_stable():
     seen_instances = []
 
     def start(state, ctx):
-        return {"items": [1, 2]}
+        return {"items": [1]}
 
     def route(state):
         return [Send("worker", {"item": item}, key=str(item)) for item in state["items"]]
 
     def worker(state, ctx):
-        if state["item"] == 1:
-            seen_instances.append(ctx.instance_id)
-            decision = ctx.interrupt({"item": state["item"], "instance": ctx.instance_id})
-            return {"seen": [decision]}
         seen_instances.append(ctx.instance_id)
-        return {"seen": [state["item"]]}
+        decision = ctx.interrupt({"item": state["item"], "instance": ctx.instance_id})
+        return {"seen": [decision]}
 
     g = StateGraph(StateSchema(reducers={"seen": append_reducer}))
     g.add_node("start", start)
@@ -202,14 +200,66 @@ def test_checkpoint_resume_keeps_send_instance_id_stable():
     assert r1.status == "interrupted"
     frontier = cp.latest("send-resume").frontier
     worker_items = [item for item in frontier if item["kind"] == "node" and item["node"] == "worker"]
-    assert len(worker_items) == 2
+    assert len(worker_items) == 1
     first_instance = worker_items[0]["instance_id"]
 
     r2 = app.invoke({}, thread_id="send-resume", command=Command(resume="ok"))
     assert r2.status == "completed"
     assert seen_instances[0] == first_instance
     assert first_instance in seen_instances[1:]
-    assert r2.state["seen"] == ["ok", 2]
+    assert r2.state["seen"] == ["ok"]
+
+
+def test_send_interrupt_commits_completed_sibling_without_rerun():
+    counter = Counter()
+
+    def start(state, ctx):
+        return {"items": ["slow", "fast"]}
+
+    def route(state):
+        return [
+            Send("worker", {"item": "slow"}, key="slow"),
+            Send("worker", {"item": "fast"}, key="fast"),
+        ]
+
+    def worker(state, ctx):
+        item = state["item"]
+        counter[item] += 1
+        if item == "slow":
+            time.sleep(0.2)
+            decision = ctx.interrupt({"item": item, "calls": dict(counter)})
+            return {"seen": ["slow:" + decision]}
+        return {"seen": ["fast"]}
+
+    g = StateGraph(StateSchema(reducers={"seen": append_reducer}))
+    g.add_node("start", start)
+    g.add_node("worker", worker)
+    g.add_edge(START, "start")
+    g.add_conditional_edges("start", route)
+    cp = Checkpointer()
+    app = g.compile(cp)
+
+    r1 = app.invoke({}, thread_id="send-interrupt-sibling")
+
+    assert r1.status == "interrupted"
+    assert counter["fast"] == 1
+    assert counter["slow"] == 1
+    assert r1.state["seen"] == ["fast"]
+
+    checkpoint = cp.latest("send-interrupt-sibling")
+    worker_items = [
+        item for item in checkpoint.frontier
+        if item["kind"] == "node" and item["node"] == "worker"
+    ]
+    assert len(worker_items) == 1
+    assert worker_items[0]["arg"] == {"item": "slow"}
+
+    r2 = app.invoke({}, thread_id="send-interrupt-sibling", command=Command(resume="ok"))
+
+    assert r2.status == "completed"
+    assert counter["fast"] == 1
+    assert counter["slow"] == 2
+    assert r2.state["seen"] == ["fast", "slow:ok"]
 
 
 def test_strict_barrier_waits_for_all_sources():
@@ -255,6 +305,7 @@ ALL_TESTS = [
     test_empty_send_list_terminates_path,
     test_mixed_send_and_static_node_keep_batch_order,
     test_checkpoint_resume_keeps_send_instance_id_stable,
+    test_send_interrupt_commits_completed_sibling_without_rerun,
     test_strict_barrier_waits_for_all_sources,
     test_fanout_reducer_requires_dict,
 ]

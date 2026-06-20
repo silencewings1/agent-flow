@@ -18,7 +18,7 @@ import time
 import traceback
 import uuid
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -833,32 +833,87 @@ class CompiledGraph:
                 )
                 futures[fut] = item
             updates: Dict[str, Dict[str, Any]] = {}
-            for fut in futures:
+            processed = set()
+            interrupt_outcome = None
+            interrupt_item = None
+            error_outcome = None
+            error_item = None
+
+            def record_outcome(fut: Any) -> None:
+                nonlocal interrupt_outcome, interrupt_item, error_outcome, error_item
                 item = futures[fut]
-                node = item["node"]
                 item_key = self._item_key(item)
                 outcome = fut.result()
-                if outcome["kind"] == "interrupt":
-                    # 任一节点请求人工介入：存盘暂停，frontier 保留未完成的整批
-                    self.cp.put(Checkpoint(thread_id, step - 1, state, current_frontier,
-                                           "interrupted", outcome["payload"]))
-                    self.cp.log_event(thread_id, "interrupt",
-                                      {"node": node,
-                                       "instance_id": item.get("instance_id"),
-                                       "payload": outcome["payload"]})
-                    return RunResult(thread_id, "interrupted", state, step - 1,
-                                     interrupt_payload=outcome["payload"])
-                if outcome["kind"] == "error":
-                    self.cp.put(Checkpoint(
-                        thread_id, step - 1, state, current_frontier, "failed"
-                    ))
-                    self.cp.log_event(thread_id, "error",
-                                      {"node": node,
-                                       "instance_id": item.get("instance_id"),
-                                       "error": outcome["error"]})
-                    return RunResult(thread_id, "failed", state, step - 1,
-                                     error=f"{node}: {outcome['error']}")
-                updates[item_key] = outcome["update"] or {}
+                processed.add(fut)
+                if outcome["kind"] == "ok":
+                    updates[item_key] = outcome["update"] or {}
+                elif outcome["kind"] == "interrupt":
+                    if interrupt_outcome is None and error_outcome is None:
+                        interrupt_outcome = outcome
+                        interrupt_item = item
+                elif outcome["kind"] == "error":
+                    if error_outcome is None and interrupt_outcome is None:
+                        error_outcome = outcome
+                        error_item = item
+
+            for fut in as_completed(futures):
+                record_outcome(fut)
+                if interrupt_outcome is not None or error_outcome is not None:
+                    # Do not checkpoint immediately.  Other siblings in the same
+                    # batch may already have completed successfully; their
+                    # updates must be committed and they must be removed from the
+                    # resume frontier to preserve the no-rerun invariant.
+                    break
+
+            if interrupt_outcome is not None or error_outcome is not None:
+                # Cancel work that has not started yet.  Futures already running
+                # cannot be safely abandoned: they may perform side effects after
+                # we return.  Wait for those running siblings, commit successful
+                # updates, and exclude them from the resume frontier.
+                for fut in futures:
+                    if fut in processed:
+                        continue
+                    if fut.cancel():
+                        continue
+                    record_outcome(fut)
+
+            if interrupt_outcome is not None:
+                completed_keys = set(updates.keys())
+                checkpoint_state = state
+                # Merge successful sibling updates in original batch order, not
+                # completion order, so partial commits remain deterministic.
+                for done_item in batch:
+                    done_key = self._item_key(done_item)
+                    if done_key in completed_keys:
+                        checkpoint_state = self.g.schema.merge(
+                            checkpoint_state, updates[done_key]
+                        )
+                checkpoint_frontier = list(waiting) + [
+                    item for item in batch
+                    if self._item_key(item) not in completed_keys
+                ]
+                node = interrupt_item["node"]
+                self.cp.put(Checkpoint(thread_id, step - 1, checkpoint_state,
+                                       checkpoint_frontier, "interrupted",
+                                       interrupt_outcome["payload"]))
+                self.cp.log_event(thread_id, "interrupt",
+                                  {"node": node,
+                                   "instance_id": interrupt_item.get("instance_id"),
+                                   "payload": interrupt_outcome["payload"]})
+                return RunResult(thread_id, "interrupted", checkpoint_state, step - 1,
+                                 interrupt_payload=interrupt_outcome["payload"])
+
+            if error_outcome is not None:
+                node = error_item["node"]
+                self.cp.put(Checkpoint(
+                    thread_id, step - 1, state, current_frontier, "failed"
+                ))
+                self.cp.log_event(thread_id, "error",
+                                  {"node": node,
+                                   "instance_id": error_item.get("instance_id"),
+                                   "error": error_outcome["error"]})
+                return RunResult(thread_id, "failed", state, step - 1,
+                                 error=f"{node}: {error_outcome['error']}")
             resume_for = {}  # resume 值只对恢复后的第一个 super-step 有效
 
             # 2) 合并所有 update（顺序按 batch，确保确定性）
