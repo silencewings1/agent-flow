@@ -8,6 +8,7 @@ from .demo_pipeline import run_pipeline
 from .demo_real_coder import run_real_coder
 from .demo_real_debugger import run_real_debugger
 from .demo_retry import run_retry
+from .demo_subgraph import run_subgraph
 from .demo_timetravel import run_timetravel
 
 
@@ -20,6 +21,7 @@ def main() -> None:
     run_real_coder()
     run_real_debugger()
     run_dynamic_send()
+    run_subgraph()
     print("\n✅ 全部场景执行完毕\n")
 
 
