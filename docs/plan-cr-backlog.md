@@ -9,73 +9,44 @@
 
 | 来源 | P1 未修 | P2 未修 | 设计层 |
 |------|---------|---------|--------|
-| Wave 1 CR (`docs/review-notes-p1.md`) | 6 | 7 | 5 |
-| Wave 2 CR (`docs/review-notes-p1-wave2.md`) | 2 | 5 | 3 |
-| dev_py37 CR (`docs/review-notes-py37.md`) | 2 | 7 | 4 |
-| **合计** | **10** | **19** | **12** |
+| Wave 1 CR (`docs/review-notes-p1.md`) | 0 | 7 | 5 |
+| Wave 2 CR (`docs/review-notes-p1-wave2.md`) | 0 | 5 | 3 |
+| dev_py37 CR (`docs/review-notes-py37.md`) | 0 | 7 | 4 |
+| **合计** | **0** | **19** | **12** |
+
+> **2026-06-23 更新**：全部 10 个 P1 已在 commit `86f7ce7`（fix: CR Backlog Round 1）中修复。
+> 当前无未修的 P1 项。
 
 ---
 
-## Round 1：立刻修（10 个 P1，~2 小时）
+## Round 1：已完成（10 个 P1，commit `86f7ce7`）
 
 影响正确性/可观测性/资源泄漏，成本低。
 
-### Wave 1 CR P1 遗留（6 个）
+### Wave 1 CR P1 遗留（6 个）— 已完成
 
-| # | 问题 | 文件:行 | 修复方案 | 量 |
-|---|------|---------|---------|----|
-| 1 | `apply_patch("x.py", "")` 静默成功 | `tools.py:116` | 开头加 `if not diff.strip(): raise ValueError(...)` | ~3 行 |
-| 2 | planner 中文逗号 split 是死代码 | `nodes.py:46-54` | 调整 fallback 顺序：优先用 seed task（保留确定性拆分），mock fallback 为兜底 | ~10 行 |
-| 3 | `parse_plan_from_llm` 多 JSON 块只取第一个 | `plan.py:119-133` | `search` → `finditer`，依次尝试直到 validate 通过 | ~10 行 |
-| 4 | `Plan.validate()` 不检查 details 类型 | `plan.py:49-64` | 加 `isinstance(t.get("details"), str)` 检查 | ~3 行 |
-| 5 | `human_review` decision docstring 缺失 | `nodes.py:161` | 写清楚 resume 值可以是 `bool` 或 `{"approve": bool}` | docstring |
-| 6 | mock fallback 丢弃 LLM partial 信息 | `plan.py:136` | 走 mock 前用关键词提取（如 `？` 结尾的句子 → clarifying_questions） | ~8 行 |
+| # | 问题 | 状态 | 修复commit |
+|---|------|------|-----------|
+| 1 | `apply_patch("x.py", "")` 静默成功 | ✅ | 86f7ce7 |
+| 2 | planner 中文逗号 split 是死代码 | ✅ | 86f7ce7 |
+| 3 | `parse_plan_from_llm` 多 JSON 块只取第一个 | ✅ | 86f7ce7 |
+| 4 | `Plan.validate()` 不检查 details 类型 | ✅ | 86f7ce7 |
+| 5 | `human_review` decision docstring 缺失 | ✅ | 86f7ce7 |
+| 6 | mock fallback 丢弃 LLM partial 信息 | ✅ | 86f7ce7 |
 
-### Wave 2 CR P1 遗留（2 个）
+### Wave 2 CR P1 遗留（2 个）— 已完成
 
-| # | 问题 | 文件:行 | 修复方案 | 量 |
-|---|------|---------|---------|----|
-| 7 | pytest 不可用行为不当 | `nodes.py:243` | debugger 启动时做 `pytest --version` 探测，不可用则 fallback 到旧 pass_at_version 行为 | ~5 行 |
-| 8 | coder 临时目录泄漏 | `nodes.py:125-126` | 当 `workdir_explicit=False` 时，coder 返回前用 try/finally 清理自建临时目录 | ~5 行 |
+| # | 问题 | 状态 | 修复commit |
+|---|------|------|-----------|
+| 7 | pytest 不可用行为不当 | ✅ | 86f7ce7 |
+| 8 | coder 临时目录泄漏 | ✅ | 86f7ce7 |
 
-### dev_py37 CR P1 遗留（2 个）
+### dev_py37 CR P1 遗留（2 个）— 已完成
 
-| # | 问题 | 文件:行 | 修复方案 | 量 |
-|---|------|---------|---------|----|
-| 9 | PEP 604/PEP 585 正则误判率极高 | `test_py37_compat.py:169-229` | 改用 AST 检测（`ast.Subscript` + `ast.BinOp(op=ast.BitOr)` 在注解上下文） | ~20 行 |
-| 10 | `verify_py37.sh` PATH 依赖脆弱 | `scripts/verify_py37.sh:9` | 加 shebang `#!/usr/bin/env bash`，用 `"${PYTHON3:-python3}"` 允许 CI 注入 | ~3 行 |
-
-### Round 1 分支策略
-
-单个分支 `fix/cr-backlog-round1`，10 个修复在 5 个文件中，无冲突。
-
-```
-fix/cr-backlog-round1:
-  agentflow/tools.py   — #1 (apply_patch 空 diff)
-  agentflow/nodes.py   — #2 (planner 死代码) + #5 (docstring) + #7 (pytest 探测) + #8 (临时目录清理)
-  agentflow/plan.py    — #3 (多 JSON 块) + #4 (details 类型) + #6 (partial 信息)
-  test/test_py37_compat.py — #9 (AST 检测)
-  scripts/verify_py37.sh   — #10 (PATH)
-```
-
-### Round 1 验收标准
-
-- 现有 9 套测试（94 用例）全过
-- 新增的修复有对应测试覆盖（见下）
-- demo.py 7 场景全过
-- Python 3.7 下也全过
-
-### Round 1 新增测试
-
-| 对应修复 | 测试 | 预期 |
-|---------|------|------|
-| #1 | `test_apply_patch_rejects_empty_diff` | 已存在（P1 Wave 1 CR 修复时加的） |
-| #2 | `test_planner_seed_tasks_used_in_fallback` | fallback 时 seed task 数 = 逗号拆分后的数量 |
-| #3 | `test_parse_multiple_json_blocks_tries_all` | 第 1 块非法、第 2 块合法 → 用第 2 块 |
-| #4 | `test_plan_validate_rejects_non_string_details` | details 为 100 层嵌套 list → validate 报错 |
-| #7 | `test_debugger_pytest_not_available` | 无 pytest 时 fallback 到 pass_at_version |
-| #8 | `test_coder_cleanup_implicit_workdir` | workdir 未显式传入 → coder 返回后目录被清理 |
-| #9 | AST 检测替代 regex — 现有 test_py37_compat 用例会自动验证 |
+| # | 问题 | 状态 | 修复commit |
+|---|------|------|-----------|
+| 9 | PEP 604/PEP 585 正则误判率极高 | ✅ | 86f7ce7 |
+| 10 | `verify_py37.sh` PATH 依赖脆弱 | ✅ | 86f7ce7 |
 
 ---
 
@@ -118,7 +89,7 @@ fix/cr-backlog-round1:
 ## 时间线
 
 ```
-Day 1 ─── Round 1: Dev Agent → CR Agent → PM merge (10 P1)
+Day 1 ─── Round 1: ✅ 已完成 (commit 86f7ce7)
 Day 2 ─── Round 2: Dev Agent → CR Agent → PM merge (7 P2)
 长期 ─── Round 3: 独立 PR × 5（需要设计讨论）
 ```

@@ -193,6 +193,19 @@ graph TD
 4. P0-2: 工具调用记录可查询、可聚合
 5. P0-3: 非法图编译前就报错，合法图无额外告警
 
+## P0 任务完成状态
+
+| 编号 | 事项 | 状态 | 完成提交 |
+|------|------|------|----------|
+| P0-1 | Activity / LLM 调用缓存 | ✅ 已完成 | `5cb76d3` |
+| P0-2 | 工具调用持久化 | ✅ 已完成 | `cae8996` |
+| P0-3 | 图校验增强 | ✅ 已完成 | `3d703e4` |
+
+> 所有 P0 任务已合并至 `master`，`agentflow/checkpoint.py`、`agentflow/graph.py`、`agentflow/nodes.py` 已包含对应实现。
+> - P0-1：`ctx.activity(key, fn)` API + `activity_results` 表，中断恢复不重复执行 fn
+> - P0-2：`tool_calls` 表 + `log_tool_call()`，工具调用自动审计
+> - P0-3：`StateGraph.validate()` + `to_mermaid()`，编译前静态拓扑校验
+
 ## 当前完成状态（2026-06-20 进度）
 
 - P0/P1 修复、JSON 图配置、README 更新已完成。
