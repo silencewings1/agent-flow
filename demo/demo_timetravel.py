@@ -1,5 +1,4 @@
 """Scenario 4: checkpoint history / time travel output."""
-from __future__ import annotations
 
 from agentflow import Checkpointer
 

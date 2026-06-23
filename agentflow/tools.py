@@ -8,14 +8,13 @@
 - run_cmd 安全性：路径含 ".." 直接抛 PermissionError；命令必须以白名单前缀开头。
 - 工具失败抛异常，由 ctx.tool → ctx.activity 自动记录 status="exception"。
 """
-from __future__ import annotations
 
 import os
 import re
 import shutil
 import subprocess
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class MCPToolProvider:
@@ -25,11 +24,11 @@ class MCPToolProvider:
     本抽象仅预留接口，不实现完整 MCP 客户端。
     """
 
-    def list_tools(self) -> List[Dict[str, Any]]:
+    def list_tools(self) -> list[dict[str, Any]]:
         """返回可用工具列表，每个工具至少含 ``name`` 字段。"""
         raise NotImplementedError
 
-    def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         """调用指定工具，返回工具原始结果（任意可 JSON 序列化类型）。"""
         raise NotImplementedError
 
@@ -142,7 +141,7 @@ class ToolRuntime:
         self.root = root
         self.workdir = os.path.join(root, f"af-{thread_id}")
         os.makedirs(self.workdir, exist_ok=True)
-        self._mcp_providers: List[MCPToolProvider] = []
+        self._mcp_providers: list[MCPToolProvider] = []
 
     # —— 文件 —— #
 
@@ -152,7 +151,7 @@ class ToolRuntime:
         with open(full, "r", encoding="utf-8") as f:
             return f.read()
 
-    def write_file(self, path: str, content: str) -> Dict[str, Any]:
+    def write_file(self, path: str, content: str) -> dict[str, Any]:
         """写文件，自动建父目录。返回 {"path", "bytes"}。"""
         full = _resolve_within_workdir(self.workdir, path)
         parent = os.path.dirname(full)
@@ -163,7 +162,7 @@ class ToolRuntime:
             f.write(data)
         return {"path": path, "bytes": len(data)}
 
-    def list_dir(self, path: str = ".") -> List[str]:
+    def list_dir(self, path: str = ".") -> list[str]:
         """列目录条目名。path 相对 workdir 或绝对（必须落在 workdir 内）。"""
         full = _resolve_within_workdir(self.workdir, path)
         if not os.path.isdir(full):
@@ -172,7 +171,7 @@ class ToolRuntime:
 
     # —— Patch —— #
 
-    def apply_patch(self, path: str, unified_diff: str) -> Dict[str, Any]:
+    def apply_patch(self, path: str, unified_diff: str) -> dict[str, Any]:
         """应用 unified diff 到 workdir 下指定文件。
 
         实现策略：把 diff 写到临时文件，在 workdir 内调 `patch -p1 --dry-run` 校验
@@ -243,7 +242,7 @@ class ToolRuntime:
 
     # —— Shell —— #
 
-    def run_cmd(self, cmd: str, timeout: float = 60.0) -> Dict[str, Any]:
+    def run_cmd(self, cmd: str, timeout: float = 60.0) -> dict[str, Any]:
         """在 workdir 内跑 shell 命令。
 
         返回 {"stdout", "stderr", "exit_code", "duration_ms"}。
@@ -296,7 +295,7 @@ class ToolRuntime:
 
     # —— Git —— #
 
-    def git_diff(self, ref1: str = "HEAD", ref2: Optional[str] = None) -> str:
+    def git_diff(self, ref1: str = "HEAD", ref2: str | None = None) -> str:
         """在 workdir 内跑 git diff。非 git 仓库或 git 不存在时返回 ''。"""
         # 先快速判定是否 git 仓库：.git 目录或上层有 .git
         cwd = self.workdir
@@ -334,9 +333,9 @@ class ToolRuntime:
         if provider not in self._mcp_providers:
             self._mcp_providers.append(provider)
 
-    def list_mcp_tools(self) -> List[Dict[str, Any]]:
+    def list_mcp_tools(self) -> list[dict[str, Any]]:
         """聚合所有已注册 MCP 提供者的工具列表。"""
-        tools: List[Dict[str, Any]] = []
+        tools: list[dict[str, Any]] = []
         for provider in self._mcp_providers:
             try:
                 tools.extend(provider.list_tools())
@@ -345,7 +344,7 @@ class ToolRuntime:
                 continue
         return tools
 
-    def call_mcp(self, name: str, arguments: Dict[str, Any]) -> Any:
+    def call_mcp(self, name: str, arguments: dict[str, Any]) -> Any:
         """按名称调用 MCP 工具。
 
         遍历已注册提供者，首个 ``list_tools()`` 含该 ``name`` 的提供者获得调用权。

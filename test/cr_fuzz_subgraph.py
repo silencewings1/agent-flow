@@ -2,7 +2,6 @@
 
 运行：PYTHONPATH=. python test/cr_fuzz_subgraph.py
 """
-from __future__ import annotations
 
 from collections import Counter
 

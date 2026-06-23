@@ -7,12 +7,10 @@
 - parse_plan_from_llm 提供三层 fallback，保证 pipeline 永不因解析失败而中断；
 - 不引入 logging 库（保持零依赖），警告信息用 print 输出。
 """
-from __future__ import annotations
 
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 
 @dataclass
@@ -20,11 +18,11 @@ class Plan:
     """结构化的需求分析结果。"""
 
     summary: str = ""
-    tasks: List[Dict] = field(default_factory=list)               # [{"id": "t1", "title": "...", "details": "..."}]
-    acceptance_criteria: List[str] = field(default_factory=list)
-    clarifying_questions: List[str] = field(default_factory=list)
+    tasks: list[dict] = field(default_factory=list)               # [{"id": "t1", "title": "...", "details": "..."}]
+    acceptance_criteria: list[str] = field(default_factory=list)
+    clarifying_questions: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         return {
             "summary": self.summary,
             "tasks": [dict(t) for t in self.tasks],   # 浅拷贝，避免下游意外改源
@@ -33,7 +31,7 @@ class Plan:
         }
 
     @classmethod
-    def from_dict(cls, d: Dict) -> "Plan":
+    def from_dict(cls, d: dict) -> "Plan":
         if not isinstance(d, dict):
             raise TypeError(f"Plan.from_dict 需要 dict，得到 {type(d).__name__}")
         tasks = d.get("tasks") or []
@@ -46,9 +44,9 @@ class Plan:
             clarifying_questions=[str(x) for x in (d.get("clarifying_questions") or [])],
         )
 
-    def validate(self) -> List[str]:
+    def validate(self) -> list[str]:
         """返回错误信息列表。空列表 = 合法。"""
-        errs: List[str] = []
+        errs: list[str] = []
         if not self.summary or not self.summary.strip():
             errs.append("summary 不能为空")
         if not self.tasks:
@@ -71,7 +69,7 @@ class Plan:
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", re.DOTALL | re.IGNORECASE)
 
 
-def _coerce_to_plan(obj: object) -> Optional[Plan]:
+def _coerce_to_plan(obj: object) -> Plan | None:
     """把 json.loads 出来的对象规整成 Plan。返回 None 表示不可用。"""
     if obj is None:
         return None
@@ -94,7 +92,7 @@ def _mock_plan(requirement: str) -> Plan:
 
 
 def parse_plan_from_llm(llm_text: str, requirement: str,
-                        tasks_seed: Optional[List[Dict]] = None) -> Plan:
+                        tasks_seed: list[dict | None] = None) -> Plan:
     """三层 fallback 解析 LLM 输出为 Plan。
 
     1. 直接 `json.loads(llm_text.strip())`
@@ -114,7 +112,7 @@ def parse_plan_from_llm(llm_text: str, requirement: str,
             if plan is not None and not plan.validate():
                 return plan
             if plan is not None:
-                print(f"[plan] WARN: 第 1 层直接 JSON 解析成功但 validate 失败: {plan.validate()}")
+                print(f"[plan] WARN: 第 1 层直接 JSON 解析成功但 validate 失败: {plan.validate()=}")
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             print(f"[plan] WARN: 第 1 层直接 JSON 解析失败: {exc}")
 
@@ -131,7 +129,7 @@ def parse_plan_from_llm(llm_text: str, requirement: str,
                     print(f"[plan] INFO: 第 2 层 JSON 块解析成功且 validate 通过")
                     return plan
                 if plan is not None:
-                    print(f"[plan] WARN: 第 2 层代码块 JSON validate 失败: {plan.validate()}")
+                    print(f"[plan] WARN: 第 2 层代码块 JSON validate 失败: {plan.validate()=}")
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
                 print(f"[plan] WARN: 第 2 层代码块 JSON 解析失败: {exc}")
         if not found_any:

@@ -6,7 +6,6 @@
 - 子图完成后经 output_map 把结果写回父 state
 - 子图内已完成节点在父图 resume 后不重跑（硬不变量）
 """
-from __future__ import annotations
 
 from agentflow import (
     Checkpointer,

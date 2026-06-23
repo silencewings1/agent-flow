@@ -6,7 +6,6 @@ Prefer:
 The historical command still works:
     python demo.py
 """
-from __future__ import annotations
 
 from demo.__main__ import main
 

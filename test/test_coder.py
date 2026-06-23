@@ -1,5 +1,4 @@
 """P1-3 真实 Coder 测试（对应 plan-p1.md 列出的 5 个用例 + 补充）。"""
-from __future__ import annotations
 
 import sys
 import os

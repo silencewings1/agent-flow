@@ -1,5 +1,4 @@
 """P2-1: dynamic Send/worker execution."""
-from __future__ import annotations
 
 from collections import Counter
 import time

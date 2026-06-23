@@ -1,5 +1,4 @@
 """Run all demo scenarios."""
-from __future__ import annotations
 
 from .demo_dynamic_send import run_dynamic_send
 from .demo_llm_config import run_llm_config

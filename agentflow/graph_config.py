@@ -4,11 +4,10 @@ The config layer is intentionally small and closed-world: node and router names
 must be provided by explicit registries from the caller. It never imports or
 evaluates code from JSON.
 """
-from __future__ import annotations
 
 import json
 import math
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping
 
 from .checkpoint import Checkpointer
 from .graph import END, START, CompiledGraph, RouterFn, Send, StateGraph, ValidationIssue
@@ -25,7 +24,7 @@ _REDUCERS = {
 }
 
 
-def load_graph_config(path: str) -> Dict[str, Any]:
+def load_graph_config(path: str) -> dict[str, Any]:
     """Read a JSON graph config file."""
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -36,7 +35,7 @@ def build_graph_from_config(
     graph_name: str,
     node_registry: NodeRegistry,
     router_registry: RouterRegistry,
-    checkpointer: Optional[Checkpointer] = None,
+    checkpointer: Checkpointer | None = None,
 ) -> CompiledGraph:
     """Build and compile a graph named ``graph_name`` from config.
 
@@ -130,7 +129,7 @@ def build_state_graph_from_config(
     return g
 
 
-def _parse_reducers(raw: Any, graph_name: str) -> Dict[str, Callable[[Any, Any], Any]]:
+def _parse_reducers(raw: Any, graph_name: str) -> dict[str, Callable[[Any, Any], Any]]:
     if raw is None:
         return {}
     if not isinstance(raw, Mapping):
@@ -143,7 +142,7 @@ def _parse_reducers(raw: Any, graph_name: str) -> Dict[str, Callable[[Any, Any],
     return reducers
 
 
-def _iter_node_specs(raw: Any, graph_name: str) -> List[Any]:
+def _iter_node_specs(raw: Any, graph_name: str) -> list[Any]:
     if isinstance(raw, Mapping):
         specs = []
         for name, node_spec in raw.items():
@@ -164,7 +163,7 @@ def _iter_node_specs(raw: Any, graph_name: str) -> List[Any]:
     raise ValueError(f"graph {graph_name} nodes 必须是数组或对象")
 
 
-def _parse_node(raw: Any, graph_name: str) -> Dict[str, Any]:
+def _parse_node(raw: Any, graph_name: str) -> dict[str, Any]:
     if isinstance(raw, str):
         return {"name": raw, "handler": raw}
     if not isinstance(raw, Mapping):
@@ -183,7 +182,7 @@ def _parse_node(raw: Any, graph_name: str) -> Dict[str, Any]:
     }
 
 
-def _parse_edge(raw: Any, graph_name: str, index: int) -> List[Any]:
+def _parse_edge(raw: Any, graph_name: str, index: int) -> list[Any]:
     if isinstance(raw, (list, tuple)) and len(raw) == 2:
         return [str(raw[0]), str(raw[1])]
     if isinstance(raw, Mapping) and "from" in raw and "to" in raw:
@@ -200,7 +199,7 @@ def _parse_edge(raw: Any, graph_name: str, index: int) -> List[Any]:
     )
 
 
-def _parse_conditional_edge(raw: Any, graph_name: str, index: int) -> Dict[str, str]:
+def _parse_conditional_edge(raw: Any, graph_name: str, index: int) -> dict[str, str]:
     if not isinstance(raw, Mapping):
         raise ValueError(f"graph {graph_name} conditional_edges[{index}] 必须是对象")
     src = raw.get("from")
@@ -217,7 +216,7 @@ def _parse_conditional_edge(raw: Any, graph_name: str, index: int) -> Dict[str, 
     return {"from": src_name, "router": str(router)}
 
 
-def _parse_list_field(spec: Mapping[str, Any], graph_name: str, field: str) -> List[Any]:
+def _parse_list_field(spec: Mapping[str, Any], graph_name: str, field: str) -> list[Any]:
     raw = spec.get(field, [])
     if not isinstance(raw, list):
         raise ValueError(f"graph {graph_name} {field} 必须是数组")
@@ -294,7 +293,7 @@ def _wrap_router_aliases(router: RouterFn) -> RouterFn:
             return _alias_node(value)
         return value
 
-    def wrapped(state: Dict[str, Any]) -> Any:
+    def wrapped(state: dict[str, Any]) -> Any:
         out = router(state)
         if isinstance(out, (list, tuple)):
             return [alias_out(x) for x in out]

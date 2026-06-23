@@ -1,5 +1,4 @@
 """Scenario 1: development pipeline with test loop and human-in-the-loop resume."""
-from __future__ import annotations
 
 from agentflow import Checkpointer, Command
 

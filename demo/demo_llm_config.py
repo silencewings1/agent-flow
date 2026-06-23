@@ -1,5 +1,4 @@
 """Scenario 5: per-node LLM provider/model resolution."""
-from __future__ import annotations
 
 from agentflow import LLMRegistry
 

@@ -1,5 +1,4 @@
 """P2-3: subgraph — a node that is itself a nested CompiledGraph."""
-from __future__ import annotations
 
 from collections import Counter
 

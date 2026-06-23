@@ -2,7 +2,6 @@
 
 验证 debugger 节点能真实执行 pytest、解析失败输出、以及 fallback 到旧行为。
 """
-from __future__ import annotations
 
 import os
 import sys

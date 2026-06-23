@@ -1,5 +1,4 @@
 """P1-2 结构化 Planner 测试（对应 plan-p1.md 列出的 7 个用例 + 兼容性用例）。"""
-from __future__ import annotations
 
 import json
 import sys

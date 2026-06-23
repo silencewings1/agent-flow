@@ -6,22 +6,21 @@
 - **硬约束**：恢复时从最近 checkpoint 的 frontier 继续，已完成节点绝不重跑
   —— 因为 frontier 里只存「还没跑的节点」，已落盘的 state 直接复用。
 """
-from __future__ import annotations
 
 import json
 import sqlite3
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 @dataclass
 class Checkpoint:
     thread_id: str
     step: int
-    state: Dict[str, Any]
-    frontier: List[Any]          # 下一个 super-step 要执行的 frontier item
+    state: dict[str, Any]
+    frontier: list[Any]          # 下一个 super-step 要执行的 frontier item
     status: str                  # running | interrupted | completed | failed
     interrupt_payload: Any = None
     ts: float = 0.0
@@ -111,13 +110,12 @@ class Checkpointer:
             self._conn.commit()
 
     def get_activity(self, thread_id: str, node: str, step: int,
-                     activity_key: str) -> Optional[tuple[Any, str]]:
-        row = self._conn.execute(
+                     activity_key: str) -> tuple[Any, str | None]:
+        if (row := self._conn.execute(
             "SELECT result, status FROM activity_results "
             "WHERE thread_id=? AND node=? AND step=? AND activity_key=?",
             (thread_id, node, step, activity_key),
-        ).fetchone()
-        if row is None:
+        ).fetchone()) is None:
             return None
         return (json.loads(row[0]), row[1])
 
@@ -137,13 +135,12 @@ class Checkpointer:
             )
             self._conn.commit()
 
-    def latest(self, thread_id: str) -> Optional[Checkpoint]:
-        row = self._conn.execute(
+    def latest(self, thread_id: str) -> Checkpoint | None:
+        if (row := self._conn.execute(
             "SELECT thread_id, step, state, frontier, status, interrupt_payload, ts "
             "FROM checkpoints WHERE thread_id=? ORDER BY step DESC LIMIT 1",
             (thread_id,),
-        ).fetchone()
-        if row is None:
+        ).fetchone()) is None:
             return None
         return Checkpoint(
             thread_id=row[0],
@@ -155,7 +152,7 @@ class Checkpointer:
             ts=row[6],
         )
 
-    def history(self, thread_id: str) -> List[Checkpoint]:
+    def history(self, thread_id: str) -> list[Checkpoint]:
         rows = self._conn.execute(
             "SELECT thread_id, step, state, frontier, status, interrupt_payload, ts "
             "FROM checkpoints WHERE thread_id=? ORDER BY step ASC",
@@ -179,7 +176,7 @@ class Checkpointer:
             )
             self._conn.commit()
 
-    def events(self, thread_id: str) -> List[Dict[str, Any]]:
+    def events(self, thread_id: str) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT seq, kind, payload, ts FROM events WHERE thread_id=? ORDER BY seq ASC",
             (thread_id,),
@@ -205,7 +202,7 @@ class Checkpointer:
             )
             self._conn.commit()
 
-    def tool_calls(self, thread_id: str) -> List[Dict[str, Any]]:
+    def tool_calls(self, thread_id: str) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT seq, node, step, tool_name, activity_key, "
             "input_summary, output_summary, duration_ms, status, ts "
@@ -222,7 +219,7 @@ class Checkpointer:
             for r in rows
         ]
 
-    def tool_call_summary(self, thread_id: str) -> List[Dict[str, Any]]:
+    def tool_call_summary(self, thread_id: str) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT node, COUNT(*) AS calls, "
             "ROUND(SUM(duration_ms), 2) AS total_duration_ms, "

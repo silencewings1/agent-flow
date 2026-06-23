@@ -4,11 +4,10 @@
 state、返回一个「部分更新（partial update）」，由 reducer 合并回全局 state。
 这样节点之间无需共享可变对象，状态演进是可追溯的（事件溯源的基础）。
 """
-from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict
+from typing import Any, Callable
 
 
 # reducer 决定「同一个 key 的新值如何并入旧值」。
@@ -46,12 +45,12 @@ def fanout_reducer(old: Any, new: Any) -> Any:
 class StateSchema:
     """声明 state 的 key 与各自的 reducer。未声明的 key 默认用覆盖语义。"""
 
-    reducers: Dict[str, Reducer] = field(default_factory=dict)
+    reducers: dict[str, Reducer] = field(default_factory=dict)
 
     def reducer_for(self, key: str) -> Reducer:
         return self.reducers.get(key, overwrite_reducer)
 
-    def merge(self, state: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
+    def merge(self, state: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
         """把节点返回的 partial update 并入 state，返回一份新 dict（不原地修改）。"""
         if not update:
             return state

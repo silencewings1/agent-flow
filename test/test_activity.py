@@ -8,16 +8,14 @@
 5. fn 抛异常 → 异常被记录，重入时重抛
 6. 复杂类型（dict/list）的序列化/反序列化
 """
-from __future__ import annotations
 
-from typing import Dict, Tuple
 
 from agentflow import Checkpointer, Command, StateGraph, StateSchema, START, END
 
 # —— 工具：可计数的 activity fn —— #
 
 def make_activity_node(name: str, key: str, return_value: str = "hello",
-                       counter: Dict = None):
+                       counter: dict = None):
     """生成一个节点，内部调用 ctx.activity(key, fn)。"""
     if counter is None:
         counter = {}
@@ -27,7 +25,7 @@ def make_activity_node(name: str, key: str, return_value: str = "hello",
     return fn
 
 
-def _do(node: str, key: str, return_value: str, counter: Dict = None) -> str:
+def _do(node: str, key: str, return_value: str, counter: dict = None) -> str:
     if counter is not None:
         counter[(node, key)] = counter.get((node, key), 0) + 1
     return return_value
@@ -37,7 +35,7 @@ def _do(node: str, key: str, return_value: str, counter: Dict = None) -> str:
 
 def test_first_call_executes_fn():
     """首次调用 activity：fn 应该被执行一次。"""
-    counter: Dict[Tuple[str, str], int] = {}
+    counter: dict[tuple[str, str], int] = {}
     g = StateGraph(StateSchema())
     g.add_node("a", make_activity_node("a", "x", counter=counter))
     g.add_edge(START, "a")
@@ -53,7 +51,7 @@ def test_first_call_executes_fn():
 
 def test_cached_on_resume():
     """中断恢复后再次调用 activity：fn 不应再次执行，返回缓存结果。"""
-    counter: Dict[Tuple[str, str], int] = {}
+    counter: dict[tuple[str, str], int] = {}
 
     def gate_node(state, ctx):
         # 先做一次 activity，再 interrupt
@@ -84,7 +82,7 @@ def test_cached_on_resume():
 
 def test_different_keys_independent():
     """不同 activity_key 的缓存各自独立。"""
-    counter: Dict[Tuple[str, str], int] = {}
+    counter: dict[tuple[str, str], int] = {}
 
     def multi_key_node(state, ctx):
         r1 = ctx.activity("key_a", lambda: _do("mk", "key_a", "val_a", counter))
@@ -113,7 +111,7 @@ def test_different_keys_independent():
 
 def test_different_threads_independent():
     """不同 thread_id 的缓存互不干扰。"""
-    counter: Dict[Tuple[str, str], int] = {}
+    counter: dict[tuple[str, str], int] = {}
 
     def simple_node(state, ctx):
         tid = state.get("tid", "?")
@@ -140,7 +138,7 @@ def test_different_threads_independent():
 
 def test_exception_is_cached():
     """fn 抛异常时：异常被记录，重入时重抛，不再执行 fn。"""
-    counter: Dict[Tuple[str, str], int] = {}
+    counter: dict[tuple[str, str], int] = {}
     attempt = [0]
 
     def failing_fn():
@@ -179,7 +177,7 @@ def test_exception_is_cached():
 
 def test_complex_types():
     """复杂类型（dict/list）的序列化/反序列化正确。"""
-    counter: Dict[Tuple[str, str], int] = {}
+    counter: dict[tuple[str, str], int] = {}
 
     def complex_fn():
         return {
@@ -213,7 +211,7 @@ def test_complex_types():
 
 def test_activity_without_checkpointer():
     """没有 checkpointer 时 activity 退化为直接调用。"""
-    counter: Dict[Tuple[str, str], int] = {}
+    counter: dict[tuple[str, str], int] = {}
 
     # 直接构造 NodeContext，不设 _cp
     from agentflow.graph import NodeContext
@@ -226,7 +224,7 @@ def test_activity_without_checkpointer():
 
 def test_tool_calls_logged():
     """首次调用 activity 时自动写入 tool_calls 记录。"""
-    counter: Dict[Tuple[str, str], int] = {}
+    counter: dict[tuple[str, str], int] = {}
 
     g = StateGraph(StateSchema())
     g.add_node("a", make_activity_node("a", "x", return_value="tool_result", counter=counter))
@@ -253,7 +251,7 @@ def test_tool_calls_logged():
 
 def test_tool_call_summary():
     """tool_call_summary 按 node 聚合统计正确。"""
-    counter: Dict[Tuple[str, str], int] = {}
+    counter: dict[tuple[str, str], int] = {}
 
     def multi_call_node(state, ctx):
         r1 = ctx.activity("llm_1", lambda: _do("mc", "llm_1", "a", counter))
@@ -289,7 +287,7 @@ def test_tool_call_summary():
 
 def test_tool_call_not_logged_on_cache_hit():
     """缓存命中时不应产生新的 tool_call 记录。"""
-    counter: Dict[Tuple[str, str], int] = {}
+    counter: dict[tuple[str, str], int] = {}
 
     g = StateGraph(StateSchema())
     g.add_node("a", make_activity_node("a", "x", return_value="cached", counter=counter))

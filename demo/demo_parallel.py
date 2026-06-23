@@ -1,5 +1,4 @@
 """Scenario 2: static fan-out with a strict barrier join."""
-from __future__ import annotations
 
 from agentflow import Checkpointer
 

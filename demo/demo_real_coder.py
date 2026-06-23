@@ -1,5 +1,4 @@
 """Scenario 6: real coder node writes files to a workdir."""
-from __future__ import annotations
 
 from agentflow import Checkpointer
 

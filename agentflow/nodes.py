@@ -10,20 +10,19 @@
 **控制流**（任务拆分、版本递增、测试通过条件）仍由 state 推导，不依赖 LLM 输出，
 LLM 仅用于产出「内容」（计划文本 / 代码 / 评审意见），保证回环可复现。
 """
-from __future__ import annotations
 
 import json
 import os
 import tempfile
 import warnings
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .graph import NodeContext
 from .llm import LLMRegistry
 from .plan import Plan, parse_plan_from_llm
 
 # —— 模块级 registry：懒加载，可被 set_registry 覆盖 —— #
-_registry: Optional[LLMRegistry] = None
+_registry: LLMRegistry | None = None
 
 
 def get_registry() -> LLMRegistry:
@@ -39,7 +38,7 @@ def set_registry(reg: LLMRegistry) -> None:
     _registry = reg
 
 
-def planner(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
+def planner(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
     """需求分析 + 任务分解（P1-2 结构化版）。
 
     产出结构化 Plan（dict）写入 state["plan"]，同时把 plan.tasks 的 id 列表
@@ -51,7 +50,7 @@ def planner(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     raw = requirement.replace("，", ",").replace("；", ";").replace(";", ",")
     task_titles = [t.strip() for t in raw.split(",") if t.strip()] or [f"实现：{requirement}"]
     # 任务 id 分配：t1, t2, t3...
-    tasks_seed: List[Dict] = [
+    tasks_seed: list[dict] = [
         {"id": f"t{i+1}", "title": title, "details": title}
         for i, title in enumerate(task_titles)
     ]
@@ -113,7 +112,7 @@ def planner(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     }
 
 
-def coder(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
+def coder(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
     """真实 Coder：遍历 plan.tasks，对每个 task 调 LLM 生成代码并写入文件。
 
     使用 ctx.tool("write_file", key=task_id, ...) 写入，自动获得缓存 + 审计。
@@ -138,8 +137,7 @@ def coder(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     feedback = state.get("test_failures") or []
 
     # 获取或创建 workdir
-    workdir_explicit = "workdir" in state
-    workdir = state.get("workdir", tempfile.mkdtemp(prefix="af-coder-"))
+    workdir = state.get("workdir") if (workdir_explicit := "workdir" in state) else tempfile.mkdtemp(prefix="af-coder-")
 
     # CR 2026-06-18 1.1: 收集已有 id，避免自动分配时冲突
     existing_ids = {t.get("id") for t in plan_tasks if t.get("id")}
@@ -193,7 +191,7 @@ def coder(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
 
         artifacts.append(f"src/task_{task_id}.py")
 
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "code": f"// v{version} — 共 {len(plan_tasks)} 个文件",
         "code_version": version,
         "log": [f"[Coder] 产出代码 v{version}，{len(plan_tasks)} 个文件: {artifacts}"],
@@ -213,7 +211,7 @@ def coder(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     return result
 
 
-def debugger(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
+def debugger(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
     """真实 Debugger：跑 pytest，解析结果，写结构化 test_failures。
 
     兜底策略：
@@ -396,7 +394,7 @@ def debugger(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     }
 
 
-def ai_review(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
+def ai_review(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
     """AI 评审：纯 LLM 评审，输出技术意见。不中断。"""
     try:
         comments = ctx.activity("ai_review_llm", lambda: get_registry().complete(
@@ -413,7 +411,7 @@ def ai_review(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
     }
 
 
-def human_review(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
+def human_review(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
     """人在回路：基于 AI 评审意见决定合并/打回。中断等待人工输入。
 
     resume 值可以是：
@@ -437,11 +435,11 @@ def human_review(state: Dict[str, Any], ctx: NodeContext) -> Dict[str, Any]:
 
 # —— 条件边路由函数 —— #
 
-def route_after_debug(state: Dict[str, Any]) -> str:
+def route_after_debug(state: dict[str, Any]) -> str:
     """测试通过 → 进入 AI 评审；否则 → 退回 Coder（形成回环）。"""
     return "ai_review" if state.get("tests_passed") else "coder"
 
 
-def route_after_human_review(state: Dict[str, Any]) -> str:
+def route_after_human_review(state: dict[str, Any]) -> str:
     from .graph import END
     return END if state.get("approved") else "coder"

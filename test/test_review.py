@@ -8,10 +8,9 @@
 - state["ai_review"] 是字符串，state["approved"] 是 bool
 - 恢复时 approve=False → 退回 coder（不是 reviewer），approve=True → END
 """
-from __future__ import annotations
 
 from collections import Counter
-from typing import Any, Dict
+from typing import Any
 
 from agentflow import (
     Checkpointer,
@@ -35,7 +34,7 @@ from agentflow.nodes import (
 
 # 记录每个节点真实被调用的次数 + ai_review/human_review 的入参快照
 calls: Counter = Counter()
-ai_review_seen: Dict[str, Any] = {}
+ai_review_seen: dict[str, Any] = {}
 human_review_decisions: list = []
 
 

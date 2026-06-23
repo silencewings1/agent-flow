@@ -1,5 +1,4 @@
 """Scenario 7: real debugger pytest loop with a fixing coder."""
-from __future__ import annotations
 
 from agentflow import Checkpointer
 

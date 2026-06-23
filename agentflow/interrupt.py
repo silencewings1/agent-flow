@@ -4,7 +4,6 @@
 - Interrupt：节点主动抛出，暂停整张图，把待人工处理的载荷写进 checkpoint。
 - Command：恢复时由外部传入，携带人工给出的 resume 值，注入回被中断的节点。
 """
-from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any

@@ -5,13 +5,11 @@
 - test_tool_caching 通过构造真实 StateGraph + 节点内 ctx.tool 包装，验证
   activity 缓存机制自动让第二次 read_file 不实际触达 fs（用 mock patch 计数）。
 """
-from __future__ import annotations
 
 import os
 import shutil
 import tempfile
 import unittest
-from typing import Dict, Tuple
 from unittest import mock
 
 from agentflow import (

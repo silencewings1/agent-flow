@@ -1,5 +1,4 @@
 """Scenario 3: node retry and event log output."""
-from __future__ import annotations
 
 from agentflow import Checkpointer
 

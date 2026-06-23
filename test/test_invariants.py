@@ -3,7 +3,6 @@
 用一个全局计数器记录每个节点真实被调用的次数；中断恢复后，断言中断点
 之前的节点调用次数没有增加。
 """
-from __future__ import annotations
 
 from collections import Counter
 

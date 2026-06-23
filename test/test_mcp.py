@@ -5,7 +5,6 @@
 - MCP 工具与 ctx.tool() 缓存/审计协同
 - 中断恢复后 MCP 调用仍可继续
 """
-from __future__ import annotations
 
 import os
 import tempfile

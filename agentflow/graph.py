@@ -8,7 +8,6 @@
 
 START / END 是两个保留节点名，分别表示入口与出口。
 """
-from __future__ import annotations
 
 import ast
 import copy
@@ -20,7 +19,7 @@ import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Set
 
 from .checkpoint import Checkpoint, Checkpointer
 from .interrupt import Command, Interrupt, _MISSING
@@ -30,9 +29,9 @@ START = "__start__"
 END = "__end__"
 
 # 节点签名：接收 (state, ctx) → 返回 partial update（dict）或 None。
-NodeFn = Callable[[Dict[str, Any], "NodeContext"], Optional[Dict[str, Any]]]
+NodeFn = Callable[[dict[str, Any], "NodeContext"], dict[str, Any | None]]
 # 条件边路由函数：接收 state → 返回下一个（或多个）节点名。
-RouterFn = Callable[[Dict[str, Any]], Any]
+RouterFn = Callable[[dict[str, Any]], Any]
 
 
 @dataclass
@@ -40,11 +39,11 @@ class Send:
     """动态调度一个 worker 节点，并给该实例注入独立 state slice。"""
 
     node: str
-    arg: Dict[str, Any] = field(default_factory=dict)
-    key: Optional[str] = None
+    arg: dict[str, Any] = field(default_factory=dict)
+    key: str | None = None
 
 # 异常类型名 → 异常类的映射，用于 activity 缓存恢复时还原原始异常类型
-_EXC_MAP: Dict[str, type] = {
+_EXC_MAP: dict[str, type] = {
     "ValueError": ValueError,
     "TypeError": TypeError,
     "KeyError": KeyError,
@@ -95,7 +94,7 @@ class NodeContext:
         return _interrupt(payload, self.resume_value)
 
     def tool(self, name: str, fn: Callable[[], Any],
-            key: Optional[str] = None, **kwargs: Any) -> Any:
+            key: str | None = None, **kwargs: Any) -> Any:
         """ctx.activity 的薄包装：所有工具调用走这里，自动获得缓存 + 审计。
 
         缓存键规则：
@@ -119,7 +118,7 @@ class NodeContext:
         input_summary = kwargs.pop("input_summary", "") if kwargs else ""
         if kwargs:
             # CR 2026-06-17 2.4: 未知 kwargs 警告（可能是 typo）
-            print(f"[ctx.tool] WARN: 忽略未知 kwargs: {list(kwargs.keys())}")
+            print(f"[ctx.tool] WARN: 忽略未知 kwargs: {list(kwargs.keys())=}")
         full_key = f"tool:{name}:{key}" if key else f"tool:{name}"
         return self.activity(full_key, fn, input_summary=input_summary)
 
@@ -217,8 +216,8 @@ class _SubgraphSpec:
 
     name: str
     subgraph: "CompiledGraph"
-    input_map: Dict[str, str]
-    output_map: Dict[str, str]
+    input_map: dict[str, str]
+    output_map: dict[str, str]
 
 
 def _make_subgraph_fn(spec: "_SubgraphSpec") -> NodeFn:
@@ -233,9 +232,9 @@ def _make_subgraph_fn(spec: "_SubgraphSpec") -> NodeFn:
     """
     sub = spec.subgraph
 
-    def subgraph_node(state: Dict[str, Any], ctx: "NodeContext") -> Optional[Dict[str, Any]]:
+    def subgraph_node(state: dict[str, Any], ctx: "NodeContext") -> dict[str, Any | None]:
         # 1) input_map：父 state → 子 state（仅映射声明的字段）
-        child_state: Dict[str, Any] = {}
+        child_state: dict[str, Any] = {}
         for parent_key, child_key in spec.input_map.items():
             if parent_key in state:
                 child_state[child_key] = state[parent_key]
@@ -252,7 +251,7 @@ def _make_subgraph_fn(spec: "_SubgraphSpec") -> NodeFn:
         if result.status == "failed":
             raise RuntimeError(f"子图 {spec.name} 失败: {result.error}")
         # 5) output_map：子 state → 父 partial update（仅映射存在的字段）
-        update: Dict[str, Any] = {}
+        update: dict[str, Any] = {}
         for child_key, parent_key in spec.output_map.items():
             if child_key in result.state:
                 update[parent_key] = result.state[child_key]
@@ -264,7 +263,7 @@ def _make_subgraph_fn(spec: "_SubgraphSpec") -> NodeFn:
 
 @dataclass
 class _Barrier:
-    sources: Tuple[str, ...]
+    sources: tuple[str, ...]
     target: str
 
 
@@ -272,10 +271,10 @@ class _Barrier:
 class RunResult:
     thread_id: str
     status: str                # completed | interrupted | failed
-    state: Dict[str, Any]
+    state: dict[str, Any]
     step: int
     interrupt_payload: Any = None
-    error: Optional[str] = None
+    error: str | None = None
 
 
 @dataclass
@@ -287,7 +286,7 @@ class ValidationIssue:
     """
     level: str                 # "error" | "warning" | "info"
     message: str
-    node: Optional[str] = None
+    node: str | None = None
 
     def __str__(self) -> str:
         prefix = {"error": "❌", "warning": "⚠️ ", "info": "ℹ️ "}.get(self.level, "")
@@ -298,15 +297,15 @@ class ValidationIssue:
 class StateGraph:
     """图定义 + 编译。API 刻意贴近 LangGraph 的 add_node / add_edge。"""
 
-    def __init__(self, schema: Optional[StateSchema] = None, max_steps: int = 50):
+    def __init__(self, schema: StateSchema | None = None, max_steps: int = 50):
         self.schema = schema or StateSchema()
         self.max_steps = max_steps
-        self._nodes: Dict[str, _Node] = {}
-        self._edges: Dict[str, List[str]] = {}           # 静态边：node -> [下游节点]
-        self._barriers: List[_Barrier] = []              # 多源 barrier：sources -> target
-        self._cond: Dict[str, RouterFn] = {}             # 条件边：node -> 路由函数
-        self._entry: List[str] = []
-        self._subgraphs: Dict[str, _SubgraphSpec] = {}   # 子图节点：name -> spec
+        self._nodes: dict[str, _Node] = {}
+        self._edges: dict[str, list[str]] = {}           # 静态边：node -> [下游节点]
+        self._barriers: list[_Barrier] = []              # 多源 barrier：sources -> target
+        self._cond: dict[str, RouterFn] = {}             # 条件边：node -> 路由函数
+        self._entry: list[str] = []
+        self._subgraphs: dict[str, _SubgraphSpec] = {}   # 子图节点：name -> spec
 
     def add_node(self, name: str, fn: NodeFn, *, retries: int = 0,
                  retry_backoff: float = 0.0) -> "StateGraph":
@@ -318,8 +317,8 @@ class StateGraph:
         return self
 
     def add_subgraph(self, name: str, subgraph: "CompiledGraph",
-                     input_map: Optional[Dict[str, str]] = None,
-                     output_map: Optional[Dict[str, str]] = None,
+                     input_map: dict[str, str | None] = None,
+                     output_map: dict[str, str | None] = None,
                      retries: int = 0, retry_backoff: float = 0.0) -> "StateGraph":
         """把一个已编译的 CompiledGraph 注册为父图的一个节点。
 
@@ -382,7 +381,7 @@ class StateGraph:
         self._cond[src] = router
         return self
 
-    def compile(self, checkpointer: Optional[Checkpointer] = None) -> "CompiledGraph":
+    def compile(self, checkpointer: Checkpointer | None = None) -> "CompiledGraph":
         # 基本校验：引用的节点都存在
         referenced = set(self._entry)
         referenced.update(self._edges.keys())
@@ -400,14 +399,14 @@ class StateGraph:
         return CompiledGraph(self, checkpointer or Checkpointer())
 
     # —— 拓扑静态分析：编译前发现非法结构 —— #
-    def validate(self) -> List[ValidationIssue]:
+    def validate(self) -> list[ValidationIssue]:
         """对图定义做静态校验，编译前调用。
 
         返回所有发现的问题（error / warning / info），调用方可按需 raise。
         设计原则：能静态判定的尽量静态判定；条件边返回值无法静态推断时，
         给出 warning 让人工确认而不是直接报错。
         """
-        issues: List[ValidationIssue] = []
+        issues: list[ValidationIssue] = []
 
         # 1) 入口必须存在
         if not self._entry:
@@ -488,7 +487,7 @@ class StateGraph:
                 queue.append(n)
                 reaches_end.add(n)
         # 反向传播：任何节点能走到 reaches_end 中的节点，自己也算
-        incoming: Dict[str, List[str]] = {}
+        incoming: dict[str, list[str]] = {}
         for src, outs in self._edges.items():
             for o in outs:
                 incoming.setdefault(o, []).append(src)
@@ -508,7 +507,7 @@ class StateGraph:
 
         # 6) 重复边
         for src, outs in self._edges.items():
-            counts: Dict[str, int] = {}
+            counts: dict[str, int] = {}
             for o in outs:
                 counts[o] = counts.get(o, 0) + 1
             for o, c in counts.items():
@@ -611,7 +610,7 @@ class StateGraph:
             visit(root)
         return literals
 
-    def _barrier_targets_from(self, node: str) -> List[str]:
+    def _barrier_targets_from(self, node: str) -> list[str]:
         return [b.target for b in self._barriers if node in b.sources]
 
     def _has_cycle(self) -> bool:
@@ -679,10 +678,9 @@ class StateGraph:
         return "\n".join(lines) + "\n"
 
     # —— 内部：给定刚跑完的节点，算出它的下游 —— #
-    def _successors(self, node: str, state: Dict[str, Any]) -> List[str]:
+    def _successors(self, node: str, state: dict[str, Any]) -> list[str]:
         if node in self._cond:
-            out = self._cond[node](state)
-            outs = out if isinstance(out, (list, tuple)) else [out]
+            outs = out if isinstance(out := self._cond[node](state), (list, tuple)) else [out]
             names = []
             for o in outs:
                 if isinstance(o, Send):
@@ -693,7 +691,7 @@ class StateGraph:
         return [o for o in self._edges.get(node, []) + self._barrier_targets_from(node)
                 if o != END]
 
-    def _reaches_end(self, node: str, state: Dict[str, Any]) -> bool:
+    def _reaches_end(self, node: str, state: dict[str, Any]) -> bool:
         """节点是否显式指向 END（条件边返回 END 或静态边连到 END）。"""
         if node in self._cond:
             out = self._cond[node](state)
@@ -715,8 +713,8 @@ class CompiledGraph:
         self._pool = ThreadPoolExecutor(max_workers=8)
 
     @staticmethod
-    def _node_item(node: str, instance_id: Optional[str] = None,
-                   arg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _node_item(node: str, instance_id: str | None = None,
+                   arg: dict[str, Any | None] = None) -> dict[str, Any]:
         return {
             "kind": "node",
             "node": node,
@@ -725,8 +723,8 @@ class CompiledGraph:
         }
 
     @staticmethod
-    def _barrier_item(sources: Tuple[str, ...], target: str,
-                      ready: Optional[List[str]] = None) -> Dict[str, Any]:
+    def _barrier_item(sources: tuple[str, ...], target: str,
+                      ready: list[str | None] = None) -> dict[str, Any]:
         return {
             "kind": "barrier",
             "sources": list(sources),
@@ -734,22 +732,20 @@ class CompiledGraph:
             "ready": list(ready or []),
         }
 
-    def _normalize_frontier(self, frontier: List[Any]) -> List[Dict[str, Any]]:
+    def _normalize_frontier(self, frontier: list[Any]) -> list[dict[str, Any]]:
         items = []
         for item in frontier:
-            if isinstance(item, str):
-                items.append(self._node_item(item))
-                continue
-            if isinstance(item, dict):
-                kind = item.get("kind", "node")
-                if kind == "barrier":
+            match item:
+                case str():
+                    items.append(self._node_item(item))
+                case dict(kind="barrier"):
                     items.append({
                         "kind": "barrier",
                         "sources": list(item.get("sources", [])),
                         "target": item.get("target"),
                         "ready": list(item.get("ready", [])),
                     })
-                else:
+                case dict():
                     node = item.get("node")
                     items.append(self._node_item(
                         node,
@@ -759,28 +755,32 @@ class CompiledGraph:
         return items
 
     @staticmethod
-    def _item_key(item: Dict[str, Any]) -> str:
-        if item.get("kind") == "barrier":
-            sources = ",".join(item.get("sources", []))
-            ready = ",".join(sorted(item.get("ready", [])))
-            return f"barrier:{sources}->{item.get('target')}:{ready}"
-        return f"node:{item.get('node')}:{item.get('instance_id')}"
+    def _item_key(item: dict[str, Any]) -> str:
+        match item.get("kind"):
+            case "barrier":
+                sources = ",".join(item.get("sources", []))
+                ready = ",".join(sorted(item.get("ready", [])))
+                return f"barrier:{sources}->{item.get('target')}:{ready}"
+            case _:
+                return f"node:{item.get('node')}:{item.get('instance_id')}"
 
     @staticmethod
-    def _item_label(item: Dict[str, Any]) -> str:
-        if item.get("kind") == "barrier":
-            return "barrier:{}->{} ready={}".format(
-                ",".join(item.get("sources", [])),
-                item.get("target"),
-                item.get("ready", []),
-            )
-        node = item.get("node")
-        instance_id = item.get("instance_id")
-        if instance_id and instance_id != node:
-            return f"{node}#{instance_id}"
-        return str(node)
+    def _item_label(item: dict[str, Any]) -> str:
+        match item.get("kind"):
+            case "barrier":
+                return "barrier:{}->{} ready={}".format(
+                    ",".join(item.get("sources", [])),
+                    item.get("target"),
+                    item.get("ready", []),
+                )
+            case _:
+                node = item.get("node")
+                instance_id = item.get("instance_id")
+                if instance_id and instance_id != node:
+                    return f"{node}#{instance_id}"
+                return str(node)
 
-    def _dedupe_items(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _dedupe_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen: Set[str] = set()
         out = []
         for item in items:
@@ -791,9 +791,9 @@ class CompiledGraph:
             out.append(item)
         return out
 
-    def _resolve_barriers(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _resolve_barriers(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         nodes = []
-        barriers: Dict[Tuple[Tuple[str, ...], str], Set[str]] = {}
+        barriers: dict[tuple[tuple[str, ...], str], Set[str]] = {}
         for item in items:
             if item.get("kind") != "barrier":
                 nodes.append(item)
@@ -819,8 +819,8 @@ class CompiledGraph:
         text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
         return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
 
-    def _send_to_item(self, source_item: Dict[str, Any], send: Send,
-                      step: int, index: int) -> Dict[str, Any]:
+    def _send_to_item(self, source_item: dict[str, Any], send: Send,
+                      step: int, index: int) -> dict[str, Any]:
         if send.node not in self.g._nodes:
             raise ValueError(f"Send 指向未定义节点: {send.node}")
         identity = send.key if send.key is not None else {
@@ -836,8 +836,8 @@ class CompiledGraph:
         instance_id = f"{send.node}:{self._stable_hash(raw)}"
         return self._node_item(send.node, instance_id, send.arg)
 
-    def _successor_items(self, item: Dict[str, Any], state: Dict[str, Any],
-                         step: int) -> List[Dict[str, Any]]:
+    def _successor_items(self, item: dict[str, Any], state: dict[str, Any],
+                         step: int) -> list[dict[str, Any]]:
         node = item["node"]
         barrier_items = [
             self._barrier_item(barrier.sources, barrier.target, [node])
@@ -863,8 +863,8 @@ class CompiledGraph:
         items = [self._node_item(o) for o in self.g._edges.get(node, []) if o != END]
         return items + barrier_items
 
-    def invoke(self, initial_state: Dict[str, Any], thread_id: Optional[str] = None,
-               command: Optional[Command] = None) -> RunResult:
+    def invoke(self, initial_state: dict[str, Any], thread_id: str | None = None,
+               command: Command | None = None) -> RunResult:
         """运行或恢复一个 thread。
 
         - 全新运行：传 initial_state（thread_id 可省略，自动生成）。
@@ -896,8 +896,8 @@ class CompiledGraph:
         return self._run_loop(thread_id, state, frontier, step, resume_for)
 
     # —— 主循环：每轮跑完一个 super-step —— #
-    def _run_loop(self, thread_id: str, state: Dict[str, Any], frontier: List[Any],
-                  step: int, resume_for: Dict[str, Any]) -> RunResult:
+    def _run_loop(self, thread_id: str, state: dict[str, Any], frontier: list[Any],
+                  step: int, resume_for: dict[str, Any]) -> RunResult:
         frontier = self._dedupe_items(self._resolve_barriers(
             self._normalize_frontier(frontier)
         ))
@@ -936,7 +936,7 @@ class CompiledGraph:
                     resume_for.get(self._item_key(item), _MISSING),
                 )
                 futures[fut] = item
-            updates: Dict[str, Dict[str, Any]] = {}
+            updates: dict[str, dict[str, Any]] = {}
             processed = set()
             interrupt_outcome = None
             interrupt_item = None
@@ -949,14 +949,13 @@ class CompiledGraph:
                 item_key = self._item_key(item)
                 outcome = fut.result()
                 processed.add(fut)
-                if outcome["kind"] == "ok":
-                    updates[item_key] = outcome["update"] or {}
-                elif outcome["kind"] == "interrupt":
-                    if interrupt_outcome is None and error_outcome is None:
+                match outcome["kind"]:
+                    case "ok":
+                        updates[item_key] = outcome["update"] or {}
+                    case "interrupt" if interrupt_outcome is None and error_outcome is None:
                         interrupt_outcome = outcome
                         interrupt_item = item
-                elif outcome["kind"] == "error":
-                    if error_outcome is None and interrupt_outcome is None:
+                    case "error" if error_outcome is None and interrupt_outcome is None:
                         error_outcome = outcome
                         error_item = item
 
@@ -1025,7 +1024,7 @@ class CompiledGraph:
                 state = self.g.schema.merge(state, updates[self._item_key(item)])
 
             # 3) 计算下一批 frontier
-            next_frontier: List[Dict[str, Any]] = list(waiting)
+            next_frontier: list[dict[str, Any]] = list(waiting)
             try:
                 for item in batch:
                     next_frontier.extend(self._successor_items(item, state, step))
@@ -1043,9 +1042,9 @@ class CompiledGraph:
         return RunResult(thread_id, "completed", state, step)
 
     # —— 单节点执行：含重试与 interrupt 捕获 —— #
-    def _exec_node(self, thread_id: str, node: _Node, item: Dict[str, Any],
-                   state: Dict[str, Any], step: int,
-                   resume_value: Any) -> Dict[str, Any]:
+    def _exec_node(self, thread_id: str, node: _Node, item: dict[str, Any],
+                   state: dict[str, Any], step: int,
+                   resume_value: Any) -> dict[str, Any]:
         attempt = 0
         run_state = state
         if item.get("arg"):

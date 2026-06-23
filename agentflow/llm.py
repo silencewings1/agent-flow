@@ -11,17 +11,16 @@
 
 安全：API Key 默认从**环境变量**读取（api_key_env 指定变量名），不落配置文件。
 """
-from __future__ import annotations
 
 import json
 import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, fields
-from typing import Any, Dict, Optional
+from typing import Any
 
 # mock 兜底：当 provider 未在配置文件中声明时使用
-_MOCK_PROVIDER: Dict[str, str] = {
+_MOCK_PROVIDER: dict[str, str] = {
     "base_url": "", "api_key_env": "", "model": "mock", "protocol": "mock",
 }
 
@@ -31,19 +30,18 @@ class NodeLLMConfig:
     """单个节点的 LLM 配置。任一字段缺省时由 registry 用 defaults / provider 默认补全。"""
 
     provider: str = "mock"               # 配置中声明的 provider 名称
-    protocol: Optional[str] = None       # HTTP 协议: anthropic | openai | mock（由 provider 定义决定）
-    model: Optional[str] = None
-    system: Optional[str] = None         # system prompt
+    protocol: str | None = None       # HTTP 协议: anthropic | openai | mock（由 provider 定义决定）
+    model: str | None = None
+    system: str | None = None         # system prompt
     temperature: float = 0.7
     max_tokens: int = 2048
-    api_key_env: Optional[str] = None     # 读取 key 的环境变量名
-    base_url: Optional[str] = None
+    api_key_env: str | None = None     # 读取 key 的环境变量名
+    base_url: str | None = None
     timeout: float = 60.0
 
-    def resolved(self, providers: Optional[Dict[str, Dict[str, str]]] = None) -> "NodeLLMConfig":
+    def resolved(self, providers: dict[str, dict[str, str | None]] = None) -> "NodeLLMConfig":
         """用 provider 默认值补全空字段，返回新对象。providers 优先，mock 兜底。"""
-        d = (providers or {}).get(self.provider)
-        if d is None and self.provider == "mock":
+        if (d := (providers or {}).get(self.provider)) is None and self.provider == "mock":
             d = _MOCK_PROVIDER
         if d is None:
             known = set((providers or {}).keys()) | {"mock"}
@@ -61,8 +59,8 @@ class NodeLLMConfig:
         )
 
 
-def _http_post_json(url: str, headers: Dict[str, str], body: Dict[str, Any],
-                    timeout: float) -> Dict[str, Any]:
+def _http_post_json(url: str, headers: dict[str, str], body: dict[str, Any],
+                    timeout: float) -> dict[str, Any]:
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
@@ -93,7 +91,7 @@ def _call_anthropic(cfg: NodeLLMConfig, prompt: str) -> str:
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
-    body: Dict[str, Any] = {
+    body: dict[str, Any] = {
         "model": cfg.model,
         "max_tokens": cfg.max_tokens,
         "temperature": cfg.temperature,
@@ -158,9 +156,9 @@ class LLMRegistry:
     每个节点的最终配置 = provider 默认值 ← defaults ← 该节点 nodes[name]（后者优先）。
     """
 
-    def __init__(self, defaults: Optional[Dict[str, Any]] = None,
-                 nodes: Optional[Dict[str, Dict[str, Any]]] = None,
-                 providers: Optional[Dict[str, Dict[str, str]]] = None):
+    def __init__(self, defaults: dict[str, Any | None] = None,
+                 nodes: dict[str, dict[str, Any | None]] = None,
+                 providers: dict[str, dict[str, str | None]] = None):
         self._defaults = defaults or {}
         self._nodes = nodes or {}
         self._providers = providers or {}
@@ -172,7 +170,7 @@ class LLMRegistry:
         return cls(raw.get("defaults", {}), raw.get("nodes", {}), raw.get("providers", {}))
 
     @classmethod
-    def load(cls, path: Optional[str] = None) -> "LLMRegistry":
+    def load(cls, path: str | None = None) -> "LLMRegistry":
         """从文件加载；文件不存在则返回全 mock registry（demo 可离线跑）。"""
         path = path or os.environ.get("AGENTFLOW_LLM_CONFIG", "llm_config.json")
         if path and os.path.exists(path):
@@ -180,7 +178,7 @@ class LLMRegistry:
         return cls()  # 空配置 → 所有节点走 mock
 
     def config_for(self, node: str) -> NodeLLMConfig:
-        merged: Dict[str, Any] = {}
+        merged: dict[str, Any] = {}
         merged.update(self._defaults)
         merged.update(self._nodes.get(node, {}))
         # 只保留 NodeLLMConfig 的合法字段，忽略 _comment / _note 等注释键
@@ -190,7 +188,7 @@ class LLMRegistry:
             merged = {"provider": "mock"}
         return NodeLLMConfig(**merged).resolved(self._providers)
 
-    def complete(self, node: str, prompt: str, *, system: Optional[str] = None) -> str:
+    def complete(self, node: str, prompt: str, *, system: str | None = None) -> str:
         """对指定节点执行一次补全。system 入参可临时覆盖配置里的 system。"""
         cfg = self.config_for(node)
         if system is not None:

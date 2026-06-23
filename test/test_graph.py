@@ -2,7 +2,6 @@
 
 执行方式：PYTHONPATH=. python3 test/test_graph.py
 """
-from __future__ import annotations
 
 from agentflow import StateGraph, START, END
 from agentflow.graph import ValidationIssue

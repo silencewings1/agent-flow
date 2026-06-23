@@ -1,5 +1,4 @@
 """Common helpers for runnable agent-flow demos."""
-from __future__ import annotations
 
 import os
 

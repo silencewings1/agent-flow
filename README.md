@@ -1,6 +1,6 @@
 # agentflow —— 最小 DAG 编排内核
 
-一个零三方依赖、纯标准库、支持 Python 3.7+ 的实现，把[调研报告](docs/agent-flow-research-report.md)的核心结论落成可运行代码：
+一个零三方依赖、纯标准库、支持 Python 3.12+ 的实现，把[调研报告](docs/agent-flow-research-report.md)的核心结论落成可运行代码：
 
 > **「AgentMesh 式角色划分（Planner/Coder/Debugger/AI Review/Human Review） × LangGraph 式 DAG 编排 + checkpointer」** —— 报告指出这是目前少有成熟产品占据的结合点。
 
@@ -53,14 +53,14 @@ demo/                # 按功能拆分的 8 个可运行 demo 场景
 ## 快速开始
 
 ```bash
-source /Users/ospacer/.py37/bin/activate
+source /Users/ospacer/.py312/bin/activate
 
 python -m demo                                      # 跑 8 个演示场景
 PYTHONPATH=. python -m pytest test/ -q              # 跑全部测试
-PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh
+PYTHON312=/opt/homebrew/bin/python3 ./scripts/verify_py314.sh
 ```
 
-项目代码无三方运行依赖，支持 Python 3.7+ 标准库。
+项目代码无三方运行依赖，支持 Python 3.12+ 标准库，使用现代语法（match/case、PEP 604 `X | Y`、PEP 585 内建泛型、walrus `:=`、f-string 调试语法）。
 
 ## 流水线拓扑（demo 场景 1）
 
