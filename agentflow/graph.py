@@ -208,6 +208,61 @@ class _Node:
 
 
 @dataclass
+class _SubgraphSpec:
+    """子图节点配置：把一个已编译的 CompiledGraph 注册为父图的一个节点。
+
+    input_map: {parent_state_key: child_state_key} —— 父 → 子 字段映射
+    output_map: {child_state_key: parent_state_key} —— 子 → 父 字段映射
+    """
+
+    name: str
+    subgraph: "CompiledGraph"
+    input_map: Dict[str, str]
+    output_map: Dict[str, str]
+
+
+def _make_subgraph_fn(spec: "_SubgraphSpec") -> NodeFn:
+    """把子图 CompiledGraph 包成一个 NodeFn，供父图当普通节点调度。
+
+    wrapper 语义：
+    - 用 input_map 从父 state 构造子图初始 state
+    - 用稳定子 thread_id 跑 sub.invoke；resume 时透传 Command
+    - 子图 interrupted → raise Interrupt（父图 _exec_node 现有 except 捕获）
+    - 子图 failed → raise RuntimeError（走父图节点级重试）
+    - 子图 completed → output_map 映射回父 partial update
+    """
+    sub = spec.subgraph
+
+    def subgraph_node(state: Dict[str, Any], ctx: "NodeContext") -> Optional[Dict[str, Any]]:
+        # 1) input_map：父 state → 子 state（仅映射声明的字段）
+        child_state: Dict[str, Any] = {}
+        for parent_key, child_key in spec.input_map.items():
+            if parent_key in state:
+                child_state[child_key] = state[parent_key]
+        # 2) 稳定子 thread_id：含父 step + instance_id，回环 / Send 场景各自独立
+        sub_tid = f"{ctx.thread_id}::sub::{spec.name}::s{ctx.step}::{ctx.instance_id}"
+        # 3) resume 透传：父图 resume_for → ctx.resume_value → Command
+        command = None
+        if ctx.resume_value is not _MISSING:
+            command = Command(resume=ctx.resume_value)
+        result = sub.invoke(child_state, thread_id=sub_tid, command=command)
+        # 4) 子图结果 → 父图 partial update / 异常
+        if result.status == "interrupted":
+            raise Interrupt(result.interrupt_payload)
+        if result.status == "failed":
+            raise RuntimeError(f"子图 {spec.name} 失败: {result.error}")
+        # 5) output_map：子 state → 父 partial update（仅映射存在的字段）
+        update: Dict[str, Any] = {}
+        for child_key, parent_key in spec.output_map.items():
+            if child_key in result.state:
+                update[parent_key] = result.state[child_key]
+        return update
+
+    subgraph_node.__name__ = f"subgraph:{spec.name}"
+    return subgraph_node
+
+
+@dataclass
 class _Barrier:
     sources: Tuple[str, ...]
     target: str
@@ -251,6 +306,7 @@ class StateGraph:
         self._barriers: List[_Barrier] = []              # 多源 barrier：sources -> target
         self._cond: Dict[str, RouterFn] = {}             # 条件边：node -> 路由函数
         self._entry: List[str] = []
+        self._subgraphs: Dict[str, _SubgraphSpec] = {}   # 子图节点：name -> spec
 
     def add_node(self, name: str, fn: NodeFn, *, retries: int = 0,
                  retry_backoff: float = 0.0) -> "StateGraph":
@@ -259,6 +315,45 @@ class StateGraph:
         if name in self._nodes:
             raise ValueError(f"节点 {name} 已存在")
         self._nodes[name] = _Node(name, fn, retries, retry_backoff)
+        return self
+
+    def add_subgraph(self, name: str, subgraph: "CompiledGraph",
+                     input_map: Optional[Dict[str, str]] = None,
+                     output_map: Optional[Dict[str, str]] = None) -> "StateGraph":
+        """把一个已编译的 CompiledGraph 注册为父图的一个节点。
+
+        子图节点对外与普通节点无异（可被 add_edge / add_conditional_edges 引用），
+        运行时由 _make_subgraph_fn 生成的 wrapper 驱动：
+
+        - input_map {parent_key: child_key}：从父 state 提取字段注入子图初始 state
+        - 子图独立运行（自己的 super-step 循环、thread_id、max_steps）
+        - 子图 status=interrupted → raise Interrupt(payload) 冒泡到父图
+        - 子图 status=failed → raise RuntimeError 冒泡（走父图节点级重试）
+        - 子图 status=completed → output_map {child_key: parent_key} 写回父 state
+
+        子图共享父 checkpointer，thread_id 为
+        ``{parent_tid}::sub::{name}::s{parent_step}::{instance_id}``，
+        含父 step + instance_id 保证回环 / Send 场景下多次重入各自独立且 thread_id 稳定，
+        resume 时子图用自己的 checkpoint 续跑（子图内已完成节点不重跑）。
+
+        子图 max_steps 由子图自己的 StateGraph 决定，与父图独立。
+        """
+        if not isinstance(subgraph, CompiledGraph):
+            raise TypeError(
+                f"add_subgraph 的 subgraph 必须是 CompiledGraph，得到 {type(subgraph).__name__}"
+            )
+        if name in (START, END):
+            raise ValueError(f"{name} 为保留节点名")
+        if name in self._nodes:
+            raise ValueError(f"节点 {name} 已存在")
+        spec = _SubgraphSpec(
+            name=name,
+            subgraph=subgraph,
+            input_map=dict(input_map or {}),
+            output_map=dict(output_map or {}),
+        )
+        self._subgraphs[name] = spec
+        self._nodes[name] = _Node(name, _make_subgraph_fn(spec))
         return self
 
     def add_edge(self, src: Any, dst: str) -> "StateGraph":
@@ -545,8 +640,10 @@ class StateGraph:
         # 节点定义（含 START/END）
         lines.append(f"    {safe(START)}([\"{START}\"]):::startNode")
         for n in sorted(self._nodes.keys()):
-            label = n
-            lines.append(f"    {safe(n)}[\"{label}\"]")
+            if n in self._subgraphs:
+                lines.append(f"    {safe(n)}[[\"子图: {n}\"]]")
+            else:
+                lines.append(f"    {safe(n)}[\"{n}\"]")
         lines.append(f"    {safe(END)}([\"{END}\"]):::endNode")
 
         # 静态边
