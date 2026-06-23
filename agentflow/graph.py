@@ -319,7 +319,8 @@ class StateGraph:
 
     def add_subgraph(self, name: str, subgraph: "CompiledGraph",
                      input_map: Optional[Dict[str, str]] = None,
-                     output_map: Optional[Dict[str, str]] = None) -> "StateGraph":
+                     output_map: Optional[Dict[str, str]] = None,
+                     retries: int = 0, retry_backoff: float = 0.0) -> "StateGraph":
         """把一个已编译的 CompiledGraph 注册为父图的一个节点。
 
         子图节点对外与普通节点无异（可被 add_edge / add_conditional_edges 引用），
@@ -337,6 +338,11 @@ class StateGraph:
         resume 时子图用自己的 checkpoint 续跑（子图内已完成节点不重跑）。
 
         子图 max_steps 由子图自己的 StateGraph 决定，与父图独立。
+
+        **retries/retry_backoff**：子图节点级重试（与 add_node 语义一致）。
+        注意：子图因 max_steps 死循环 failed 后，重试时子图从 failed checkpoint
+        恢复（sub_tid 不变），简单重试不会解决问题。retries 更适合子图内瞬时错误
+        （如 LLM 超时）的场景。
         """
         if not isinstance(subgraph, CompiledGraph):
             raise TypeError(
@@ -353,7 +359,8 @@ class StateGraph:
             output_map=dict(output_map or {}),
         )
         self._subgraphs[name] = spec
-        self._nodes[name] = _Node(name, _make_subgraph_fn(spec))
+        self._nodes[name] = _Node(name, _make_subgraph_fn(spec),
+                                  retries=retries, retry_backoff=retry_backoff)
         return self
 
     def add_edge(self, src: Any, dst: str) -> "StateGraph":
@@ -880,7 +887,7 @@ class CompiledGraph:
                               {"from_step": step, "frontier": frontier})
         else:
             state = self.g.schema.merge({}, initial_state)
-            frontier = [self._node_item(n) for n in self.g._entry]
+            frontier = [self._node_item(n) for n in self.g._entry if n != END]
             step = 0
             resume_for = {}
             self.cp.log_event(thread_id, "start", {"entry": frontier})

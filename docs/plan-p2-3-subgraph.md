@@ -37,14 +37,15 @@ StateGraph.add_subgraph(
     subgraph: CompiledGraph,
     input_map: Dict[str, str],     # {parent_state_key: child_state_key}
     output_map: Dict[str, str],    # {child_state_key: parent_state_key}
-    max_steps: Optional[int] = None,  # None=继承父 max_steps
+    retries: int = 0,              # 子图节点级重试（与 add_node 语义一致）
+    retry_backoff: float = 0.0,    # 重试间隔秒
 ) -> StateGraph
 ```
 
 - **共享父 checkpointer**，独立 thread_id：`f"{ctx.thread_id}::sub::{name}::s{ctx.step}::{ctx.instance_id}"`
   - 含父 step + instance_id → 同一父节点多次重入（如回环）也各自独立子 thread
   - thread_id 稳定 → 子图 resume 时用自己的 checkpoint 续跑，**子图内已完成节点不重跑**（保持硬不变量）
-- 子图 max_steps：默认继承父图；显式传入则覆盖（防止子图死循环拖垮父图）
+- 子图 max_steps 由子图自己的 StateGraph 决定，与父图独立
 - 子图中断时 `interrupt_payload` 直接冒泡给父图；resume 值经 `ctx.resume_value` → `Command(resume=...)` 透传给子图 `invoke`
 
 ### 1.3 数据流示例
@@ -163,11 +164,8 @@ for n in sorted(self._nodes.keys()):
 
 ### 4.4 max_steps 继承
 
-`add_subgraph` 时 `max_steps=None` → wrapper 运行时读 `self.g.max_steps`（父图）。注意：子图 `CompiledGraph` 在编译时已固定自己的 `max_steps`，所以"继承父"的实现是：**`add_subgraph` 时若未传 `max_steps`，就用父图当前 `max_steps` 重新编译子图**，或要求调用方在 `sub.compile()` 时就指定。本计划采用后者（更简单、无隐藏重编译）：
-
-- 调用方负责 `sub.compile(cp)` 时传 `max_steps`（StateGraph 构造时指定）
-- `add_subgraph` 的 `max_steps` 参数仅作文档提示，不强制覆盖（避免 surprising recompile）
-- 文档明确：子图 max_steps 由子图自己的 StateGraph 决定，与父图独立
+子图 max_steps 由子图自己的 StateGraph 决定（`sub.compile()` 时已固定），与父图独立。
+调用方负责在子图 `StateGraph(max_steps=N)` 构造时指定。
 
 ---
 

@@ -291,6 +291,56 @@ def test_add_subgraph_rejects_non_compiled_graph():
         pass
 
 
+# —— 附加：空图修复验证 —— #
+
+
+def test_empty_graph_completes():
+    """空图 START → END（无业务节点）应直接 completed，不报 KeyError。"""
+    g = StateGraph()
+    g.add_edge(START, END)
+
+    res = g.compile(Checkpointer()).invoke({"x": 1}, thread_id="empty-graph")
+    assert res.status == "completed", res.status
+    assert res.state["x"] == 1
+    assert res.step == 0
+
+
+def test_empty_subgraph_completes():
+    """空子图（无业务节点）应在父图中正常运行并完成。"""
+    sub = StateGraph()
+    sub.add_edge(START, END)
+
+    main = StateGraph()
+    main.add_subgraph("noop", sub.compile(Checkpointer()))
+    main.add_edge(START, "noop")
+    main.add_edge("noop", END)
+
+    res = main.compile(Checkpointer()).invoke({}, thread_id="empty-sub")
+    assert res.status == "completed", res.status
+
+
+# —— 附加：add_subgraph retries 参数 —— #
+
+
+def test_add_subgraph_accepts_retries_param():
+    """验证 add_subgraph 接受 retries / retry_backoff 参数。"""
+    sub = StateGraph()
+    sub.add_node("w", lambda s, c: {"ok": True})
+    sub.add_edge(START, "w")
+    sub.add_edge("w", END)
+
+    main = StateGraph()
+    main.add_subgraph("child", sub.compile(Checkpointer()),
+                      output_map={"ok": "ok"},
+                      retries=2, retry_backoff=0.1)
+    main.add_edge(START, "child")
+    main.add_edge("child", END)
+
+    res = main.compile(Checkpointer()).invoke({}, thread_id="sub-retries")
+    assert res.status == "completed", res.status
+    assert res.state["ok"] is True
+
+
 ALL_TESTS = [
     test_subgraph_runs_and_returns_output,
     test_subgraph_interrupt_bubbles_to_parent,
@@ -300,6 +350,9 @@ ALL_TESTS = [
     test_subgraph_no_rerun_on_parent_resume,
     test_to_mermaid_renders_subgraph_label,
     test_add_subgraph_rejects_non_compiled_graph,
+    test_empty_graph_completes,
+    test_empty_subgraph_completes,
+    test_add_subgraph_accepts_retries_param,
 ]
 
 
