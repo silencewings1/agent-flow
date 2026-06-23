@@ -18,6 +18,22 @@ import time
 from typing import Any, Dict, List, Optional
 
 
+class MCPToolProvider:
+    """MCP 工具提供者抽象。子类实现具体协议（stdio / HTTP / mock）。
+
+    MCP（Model Context Protocol）是 Anthropic 提出的外部工具标准协议。
+    本抽象仅预留接口，不实现完整 MCP 客户端。
+    """
+
+    def list_tools(self) -> List[Dict[str, Any]]:
+        """返回可用工具列表，每个工具至少含 ``name`` 字段。"""
+        raise NotImplementedError
+
+    def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
+        """调用指定工具，返回工具原始结果（任意可 JSON 序列化类型）。"""
+        raise NotImplementedError
+
+
 # run_cmd 命令白名单：只允许以下前缀的程序名。
 #
 # 重要安全说明（CR 2026-06-17 指出）：
@@ -126,6 +142,7 @@ class ToolRuntime:
         self.root = root
         self.workdir = os.path.join(root, f"af-{thread_id}")
         os.makedirs(self.workdir, exist_ok=True)
+        self._mcp_providers: List[MCPToolProvider] = []
 
     # —— 文件 —— #
 
@@ -306,6 +323,42 @@ class ToolRuntime:
         if proc.returncode != 0:
             return ""
         return proc.stdout
+
+    # —— MCP 工具适配 —— #
+
+    def register_mcp(self, provider: MCPToolProvider) -> None:
+        """注册一个 MCP 工具提供者。
+
+        同一提供者可多次注册（幂等）；调用方可在节点内通过 ``call_mcp`` 调用。
+        """
+        if provider not in self._mcp_providers:
+            self._mcp_providers.append(provider)
+
+    def list_mcp_tools(self) -> List[Dict[str, Any]]:
+        """聚合所有已注册 MCP 提供者的工具列表。"""
+        tools: List[Dict[str, Any]] = []
+        for provider in self._mcp_providers:
+            try:
+                tools.extend(provider.list_tools())
+            except Exception:
+                # 单个提供者故障不影响其他提供者
+                continue
+        return tools
+
+    def call_mcp(self, name: str, arguments: Dict[str, Any]) -> Any:
+        """按名称调用 MCP 工具。
+
+        遍历已注册提供者，首个 ``list_tools()`` 含该 ``name`` 的提供者获得调用权。
+        未找到时抛 ``ValueError``。
+        """
+        for provider in self._mcp_providers:
+            try:
+                tool_names = {t.get("name") for t in provider.list_tools() if isinstance(t, dict)}
+                if name in tool_names:
+                    return provider.call_tool(name, arguments)
+            except Exception:
+                continue
+        raise ValueError(f"MCP 工具未找到: {repr(name)}（已注册提供者: {len(self._mcp_providers)} 个）")
 
     # —— 清理 —— #
 
