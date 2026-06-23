@@ -1,7 +1,24 @@
-"""P2-4: MCP 工具适配 — 验证 MCPToolProvider ABC + ToolRuntime.register_mcp。"""
+"""P2-4: MCP 工具适配 — 验证 MCPToolProvider ABC + ToolRuntime.register_mcp。
+
+集成测试（graph + MCP）：
+- 节点在 StateGraph 内调用 MCP 工具
+- MCP 工具与 ctx.tool() 缓存/审计协同
+- 中断恢复后 MCP 调用仍可继续
+"""
 from __future__ import annotations
 
-from agentflow import MCPToolProvider, ToolRuntime
+import os
+import tempfile
+
+from agentflow import (
+    END,
+    START,
+    Checkpointer,
+    MCPToolProvider,
+    StateGraph,
+    StateSchema,
+    ToolRuntime,
+)
 
 
 # —— Mock MCP 提供者 —— #
@@ -40,7 +57,7 @@ class _BrokenProvider(MCPToolProvider):
         raise RuntimeError("provider down")
 
 
-# —— 测试 1：注册 + list_tools —— #
+# —— 单元测试：ToolRuntime 隔离 —— #
 
 
 def test_register_mcp_and_list_tools():
@@ -98,7 +115,7 @@ def test_broken_provider_does_not_break_others():
     assert names == {"get_weather", "get_forecast"}
 
 
-# —— 测试 2：call_tool —— #
+# —— 单元测试：call_mcp —— #
 
 
 def test_call_mcp_tool_returns_result():
@@ -142,7 +159,120 @@ def test_call_mcp_without_providers_raises():
         assert "anything" in str(exc)
 
 
+# —— 集成测试：graph + MCP —— #
+
+
+def test_graph_node_calls_mcp_tool_directly():
+    """节点内直接创建 ToolRuntime 并调用 MCP 工具。"""
+    weather_calls = []
+
+    class _CountingProvider(_MockWeatherProvider):
+        def call_tool(self, name, arguments):
+            weather_calls.append((name, arguments))
+            return super().call_tool(name, arguments)
+
+    def weather_node(state, ctx):
+        rt = ToolRuntime(thread_id=ctx.thread_id, root=tempfile.gettempdir())
+        rt.register_mcp(_CountingProvider())
+        result = rt.call_mcp("get_weather", {"city": state.get("city", "?")})
+        return {"weather": result}
+
+    g = StateGraph()
+    g.add_node("weather", weather_node)
+    g.add_edge(START, "weather")
+    g.add_edge("weather", END)
+
+    res = g.compile(Checkpointer()).invoke({"city": "北京"}, thread_id="mcp-graph-1")
+    assert res.status == "completed"
+    assert res.state["weather"]["city"] == "北京"
+    assert res.state["weather"]["temp_c"] == 25
+    assert len(weather_calls) == 1
+
+
+def test_graph_node_mcp_tool_with_ctx_tool_cache():
+    """MCP 工具调用通过 ctx.tool() 包装，获得 activity 缓存。"""
+    call_count = [0]
+
+    class _CountingProvider(_MockWeatherProvider):
+        def call_tool(self, name, arguments):
+            call_count[0] += 1
+            return super().call_tool(name, arguments)
+
+    def weather_node(state, ctx):
+        rt = ToolRuntime(thread_id=ctx.thread_id, root=tempfile.gettempdir())
+        rt.register_mcp(_CountingProvider())
+        # 用 ctx.tool 包装 MCP 调用，获得缓存
+        def _call():
+            return rt.call_mcp("get_weather", {"city": state.get("city", "?")})
+        result = ctx.tool("mcp:weather", _call, key="beijing", input_summary="city=北京")
+        return {"weather": result}
+
+    g = StateGraph()
+    g.add_node("weather", weather_node)
+    g.add_edge(START, "weather")
+    g.add_edge("weather", END)
+
+    cp = Checkpointer()
+    # 第一次执行
+    res1 = g.compile(cp).invoke({"city": "北京"}, thread_id="mcp-graph-cache")
+    assert res1.status == "completed"
+    assert call_count[0] == 1
+
+    # 再次执行（同 thread），缓存命中，call_tool 不再执行
+    res2 = g.compile(cp).invoke({"city": "北京"}, thread_id="mcp-graph-cache")
+    assert res2.status == "completed"
+    assert call_count[0] == 1  # 不增加
+
+
+def test_graph_with_multiple_mcp_providers():
+    """图中节点同时使用多个 MCP 提供者。"""
+    def multi_node(state, ctx):
+        rt = ToolRuntime(thread_id=ctx.thread_id, root=tempfile.gettempdir())
+        rt.register_mcp(_MockWeatherProvider())
+
+        class _CalcProvider(MCPToolProvider):
+            def list_tools(self):
+                return [{"name": "add", "input_schema": {"a": int, "b": int}}]
+
+            def call_tool(self, name, arguments):
+                return {"sum": arguments["a"] + arguments["b"]}
+
+        rt.register_mcp(_CalcProvider())
+
+        weather = rt.call_mcp("get_weather", {"city": "北京"})
+        calc = rt.call_mcp("add", {"a": 1, "b": 2})
+        return {"weather": weather, "calc": calc}
+
+    g = StateGraph()
+    g.add_node("multi", multi_node)
+    g.add_edge(START, "multi")
+    g.add_edge("multi", END)
+
+    res = g.compile(Checkpointer()).invoke({}, thread_id="mcp-graph-multi")
+    assert res.status == "completed"
+    assert res.state["weather"]["city"] == "北京"
+    assert res.state["calc"]["sum"] == 3
+
+
+def test_graph_mcp_tool_unknown_raises_cleanly():
+    """MCP 工具未找到时抛 ValueError，graph 将其记录为 failed 状态。"""
+    def bad_node(state, ctx):
+        rt = ToolRuntime(thread_id=ctx.thread_id, root=tempfile.gettempdir())
+        rt.register_mcp(_MockWeatherProvider())
+        return rt.call_mcp("nonexistent", {})
+
+    g = StateGraph()
+    g.add_node("bad", bad_node)
+    g.add_edge(START, "bad")
+    g.add_edge("bad", END)
+
+    res = g.compile(Checkpointer()).invoke({}, thread_id="mcp-graph-bad")
+    assert res.status == "failed"
+    assert "nonexistent" in (res.error or "")
+
+
 ALL_TESTS = [
+    # 单元测试
     test_register_mcp_and_list_tools,
     test_register_mcp_is_idempotent,
     test_register_multiple_providers,
@@ -151,6 +281,11 @@ ALL_TESTS = [
     test_call_mcp_tool_with_arguments,
     test_call_mcp_unknown_tool_raises,
     test_call_mcp_without_providers_raises,
+    # 集成测试
+    test_graph_node_calls_mcp_tool_directly,
+    test_graph_node_mcp_tool_with_ctx_tool_cache,
+    test_graph_with_multiple_mcp_providers,
+    test_graph_mcp_tool_unknown_raises_cleanly,
 ]
 
 
