@@ -20,6 +20,7 @@ from .interrupt import Command, Interrupt
 from .llm import LLMRegistry, NodeLLMConfig
 from .plan import Plan, parse_plan_from_llm
 from .tools import ToolRuntime
+from .tools import MCPToolProvider
 from .graph_config import (
     build_graph_from_config,
     build_state_graph_from_config,
@@ -43,6 +44,7 @@ __all__ = [
     "Command",
     "Interrupt",
     "LLMRegistry",
+    "MCPToolProvider",
     "NodeLLMConfig",
     "Plan",
     "parse_plan_from_llm",
