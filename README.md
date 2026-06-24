@@ -256,9 +256,9 @@ LLM 接入全部通过**配置文件**（JSON），每个节点可单独指定 p
   },
   "defaults": { "provider": "openai_chat", "temperature": 0.3, "max_tokens": 2048 },
   "nodes": {
-    "planner":  { "model": "claude-sonnet-4-20250514", "system": "你是资深需求分析师" },
-    "coder":    { "model": "gpt-4o", "system": "你是高级工程师，只输出代码" },
-    "debugger": { "model": "gpt-4o" },
+    "planner":  { "system": "你是资深需求分析师" },
+    "coder":    { "system": "你是高级工程师，只输出代码" },
+    "debugger": {},
     "reviewer": { "provider": "mock" }
   }
 }

@@ -33,9 +33,9 @@ def run_llm_config() -> None:
         },
         defaults={"provider": "openai_chat", "temperature": 0.3},
         nodes={
-            "planner": {"model": "claude-sonnet-4-20250514", "system": "需求分析师"},
-            "coder": {"provider": "openai_chat", "model": "gpt-4o"},
-            "debugger": {"model": "claude-sonnet-4-20250514"},
+            "planner": {"provider": "anthropic", "system": "需求分析师"},
+            "coder": {"provider": "openai_chat", "system": "高级工程师"},
+            "debugger": {"provider": "openai_chat"},
             "reviewer": {"provider": "mock"},
         },
     )

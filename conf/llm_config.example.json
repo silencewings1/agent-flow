@@ -35,22 +35,18 @@
   "nodes": {
     "planner": {
       "provider": "anthropic",
-      "model": "claude-sonnet-4-20250514",
       "system": "你是资深需求分析师，把需求拆成清晰的子任务。",
       "temperature": 0.2
     },
     "coder": {
       "provider": "openai_chat",
-      "model": "gpt-4o",
       "system": "你是高级工程师，只输出可运行代码。"
     },
     "debugger": {
-      "provider": "openai_chat",
-      "model": "gpt-4o"
+      "provider": "openai_chat"
     },
     "reviewer": {
-      "provider": "openai_chat",
-      "model": "gpt-4o"
+      "provider": "openai_chat"
     }
   }
 }

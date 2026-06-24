@@ -193,9 +193,20 @@ def test_planner_works_with_mock_llm():
     # 重置 module-level registry，确保走「找不到配置文件」的全 mock 路径
     import agentflow.nodes as nodes_mod
     nodes_mod._registry = None
-    reg = get_registry()
-    cfg = reg.config_for("planner")
-    assert cfg.provider == "mock", f"无配置时 planner 应走 mock，得到 {cfg.provider}"
+    # 将配置文件指向不存在的路径，确保全 mock
+    import os
+    old_env = os.environ.get("AGENTFLOW_LLM_CONFIG")
+    os.environ["AGENTFLOW_LLM_CONFIG"] = "/tmp/nonexistent_llm_config.json"
+    try:
+        reg = get_registry()
+        cfg = reg.config_for("planner")
+        assert cfg.provider == "mock", f"无配置时 planner 应走 mock，得到 {cfg.provider}"
+    finally:
+        if old_env is None:
+            del os.environ["AGENTFLOW_LLM_CONFIG"]
+        else:
+            os.environ["AGENTFLOW_LLM_CONFIG"] = old_env
+        nodes_mod._registry = None  # 不影响后续用例
 
     g = StateGraph(StateSchema())
     g.add_node("planner", planner)
