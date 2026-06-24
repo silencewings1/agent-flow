@@ -37,7 +37,7 @@ A zero-dependency DAG orchestration kernel that combines AgentMesh-style role no
 
 ### Adding a new LLM provider
 
-Add an entry to `llm_config.json` under `providers` with `protocol: "openai/chat"` (Chat Completions), `protocol: "openai/response"` (Responses API), or `protocol: "anthropic"`. No code changes needed. The `protocol` field maps to the dispatch table in `llm.py:_DISPATCH`.
+Add an entry to `llm_config.json` under `providers` with `models: [...]` (list of available models) and `protocol: "openai/chat"` (Chat Completions), `protocol: "openai/response"` (Responses API), or `protocol: "anthropic"`. No code changes needed. The `protocol` field maps to the dispatch table in `llm.py:_DISPATCH`. Model inheritance: `nodes[name].model → defaults.default_model → provider.default_model → provider.models[0]`.
 
 ## Multi-session collaboration (多窗口协作)
 
