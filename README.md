@@ -1,6 +1,6 @@
 # agentflow —— 最小 DAG 编排内核
 
-一个零三方依赖、纯标准库、支持 Python 3.12+ 的实现，把[调研报告](docs/agent-flow-research-report.md)的核心结论落成可运行代码：
+一个使用 openai/anthropic SDK 接入 LLM、支持 Python 3.12+ 的实现，把[调研报告](docs/agent-flow-research-report.md)的核心结论落成可运行代码：
 
 > **「AgentMesh 式角色划分（Planner/Coder/Debugger/AI Review/Human Review） × LangGraph 式 DAG 编排 + checkpointer」** —— 报告指出这是目前少有成熟产品占据的结合点。
 
@@ -29,7 +29,7 @@ agentflow/
   checkpoint.py  # 事件溯源式 SQLite checkpointer（含 activity 缓存 + tool_calls 表）
   graph.py       # StateGraph 定义（含 validate + to_mermaid）+ CompiledGraph 超步执行器
   graph_config.py # 从 JSON 配置构建 StateGraph / CompiledGraph
-  llm.py         # 每节点 LLM 配置层（mock / Anthropic / OpenAI）
+  llm.py         # 每节点 LLM 配置层（mock / anthropic / openai/chat / openai/response）
   nodes.py       # planner/coder/debugger/ai_review/human_review + 条件路由函数
   plan.py        # 规划结构与兼容转换
   tools.py       # 受控命令执行工具
@@ -60,7 +60,7 @@ PYTHONPATH=. python -m pytest test/ -q              # 跑全部测试
 ./scripts/verify_py314.sh                           # Python 3.14 现代语法全量验证
 ```
 
-项目代码无三方运行依赖，支持 Python 3.12+ 标准库，使用现代语法（match/case、PEP 604 `X | Y`、PEP 585 内建泛型、walrus `:=`、f-string 调试语法）。
+项目依赖 openai/anthropic SDK 接入 LLM，核心编排代码使用 Python 3.12+ 现代语法（match/case、PEP 604 `X | Y`、PEP 585 内建泛型、walrus `:=`、f-string 调试语法）。
 
 ## 流水线拓扑（demo 场景 1）
 
@@ -241,20 +241,20 @@ LLM 接入全部通过**配置文件**（JSON），每个节点可单独指定 p
       "model": "claude-sonnet-4-20250514",
       "protocol": "anthropic"
     },
-	    "openai_chat": {
-	      "base_url": "https://api.openai.com/v1",
-	      "api_key_env": "OPENAI_API_KEY",
-	      "model": "gpt-4o",
-	      "protocol": "openai/chat"
-	    },
-	    "openai_response": {
-	      "base_url": "https://api.openai.com/v1",
-	      "api_key_env": "OPENAI_API_KEY",
-	      "model": "gpt-4o",
-	      "protocol": "openai/response"
-	    }
-	  },
-	  "defaults": { "provider": "openai_chat", "temperature": 0.3, "max_tokens": 2048 },
+    "openai_chat": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "gpt-4o",
+      "protocol": "openai/chat"
+    },
+    "openai_response": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "gpt-4o",
+      "protocol": "openai/response"
+    }
+  },
+  "defaults": { "provider": "openai_chat", "temperature": 0.3, "max_tokens": 2048 },
   "nodes": {
     "planner":  { "model": "claude-sonnet-4-20250514", "system": "你是资深需求分析师" },
     "coder":    { "model": "gpt-4o", "system": "你是高级工程师，只输出代码" },
@@ -328,7 +328,7 @@ N.set_registry(reg)                        # 流水线节点据此调用对应 p
 
 `demo/` 覆盖 8 个场景：流水线 HITL、并行扇出、节点重试、时间旅行、每节点 LLM 配置、真实 Coder 写文件、真实 Debugger pytest 回环、动态 Send/worker。
 
-`PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh` 覆盖 Python 3.7 语法、导入和测试兼容性。
+`./scripts/verify_py314.sh` 覆盖 Python 3.14 语法、导入和测试兼容性。
 
 ## 边界与可扩展点
 
@@ -375,7 +375,7 @@ PYTHONPATH=. python -m pytest test/ -q
 ./scripts/verify_py314.sh
 ```
 
-**项目代码无三方运行依赖**，Python 3.7+ 标准库即可。
+**LLM 调用依赖 openai/anthropic SDK**，核心编排代码无三方运行依赖，Python 3.12+ 标准库即可。
 
 ### 接入其他 OpenAI 兼容厂商
 
