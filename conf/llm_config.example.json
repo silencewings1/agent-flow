@@ -1,33 +1,37 @@
 {
   "_comment": "每节点 LLM 配置示例。复制为 llm_config.json 并按需修改。",
   "_comment2": "API Key 不写这里，改为设置对应环境变量（见 api_key_env）。",
-  "_comment3": "最终配置 = provider 协议默认 ← providers 声明 ← defaults ← nodes[名称]。",
-  "_comment4": "base_url 使用 SDK 格式（不含 endpoint 路径，SDK 自行拼接）。",
+  "_comment3": "providers.models 列表声明可用模型，nodes 中只需选择 model 名称。",
+  "_comment4": "model 继承链：nodes.model → defaults.default_model → provider.default_model → provider.models[0]。",
+  "_comment5": "base_url 使用 SDK 格式（不含 endpoint 路径，SDK 自行拼接）。",
 
   "providers": {
     "anthropic": {
       "base_url": "https://api.anthropic.com",
       "api_key_env": "ANTHROPIC_API_KEY",
-      "model": "claude-sonnet-4-20250514",
+      "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"],
+      "default_model": "claude-sonnet-4-20250514",
       "protocol": "anthropic"
     },
     "openai_chat": {
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
-      "model": "gpt-4o",
+      "models": ["gpt-4o", "gpt-4o-mini"],
+      "default_model": "gpt-4o",
       "protocol": "openai/chat"
     },
     "openai_response": {
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
-      "model": "gpt-4o",
+      "models": ["gpt-4o", "gpt-4o-mini"],
+      "default_model": "gpt-4o",
       "protocol": "openai/response"
     }
   },
 
   "defaults": {
     "provider": "openai_chat",
-    "model": "gpt-4o",
+    "default_model": "gpt-4o",
     "temperature": 0.3,
     "max_tokens": 2048
   },

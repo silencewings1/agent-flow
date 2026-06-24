@@ -32,8 +32,10 @@ except ImportError:  # pragma: no cover
     Anthropic = None  # type: ignore[assignment,misc]
 
 
-_MOCK_PROVIDER: dict[str, str] = {
-    "base_url": "", "api_key_env": "", "model": "mock", "protocol": "mock",
+_MOCK_PROVIDER: dict[str, Any] = {
+    "base_url": "", "api_key_env": "",
+    "models": ["mock"], "default_model": "mock",
+    "protocol": "mock",
 }
 
 
@@ -44,6 +46,7 @@ class NodeLLMConfig:
     provider: str = "mock"               # 配置中声明的 provider 名称
     protocol: str | None = None          # anthropic | openai/chat | openai/response | mock
     model: str | None = None
+    default_model: str | None = None     # 从 defaults.default_model 或 provider.default_model 继承
     system: str | None = None            # system prompt / instructions
     temperature: float = 0.7
     max_tokens: int = 2048
@@ -51,17 +54,30 @@ class NodeLLMConfig:
     base_url: str | None = None          # SDK base_url（不含 endpoint 路径）
     timeout: float = 60.0
 
-    def resolved(self, providers: dict[str, dict[str, str | None]] = None) -> "NodeLLMConfig":
-        """用 provider 默认值补全空字段，返回新对象。providers 优先，mock 兜底。"""
+    def resolved(self, providers: dict[str, dict[str, Any]] = None) -> "NodeLLMConfig":
+        """用 provider 默认值补全空字段，返回新对象。providers 优先，mock 兜底。
+
+        model 继承链（优先级从高到低）：
+          nodes.model
+          → defaults.default_model（由 registry 在合并时注入）
+          → provider.default_model
+          → provider.models[0]（列表第一项）
+        """
         if (d := (providers or {}).get(self.provider)) is None and self.provider == "mock":
             d = _MOCK_PROVIDER
         if d is None:
             known = set((providers or {}).keys()) | {"mock"}
             raise ValueError(f"未知 provider: {self.provider}（支持: {', '.join(sorted(known))}）")
+        models: list[str] = d.get("models") or []
+        provider_default_model: str | None = d.get("default_model")
+        # model 继承链
+        model = self.model
+        if not model:
+            model = self.default_model or provider_default_model or (models[0] if models else "mock")
         return NodeLLMConfig(
             provider=self.provider,
             protocol=self.protocol or d.get("protocol", "mock"),
-            model=self.model or d["model"],
+            model=model,
             system=self.system,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
@@ -166,37 +182,44 @@ class LLMRegistry:
             "anthropic": {
               "base_url": "https://api.anthropic.com",
               "api_key_env": "ANTHROPIC_API_KEY",
-              "model": "claude-sonnet-4-20250514",
+              "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"],
+              "default_model": "claude-sonnet-4-20250514",
               "protocol": "anthropic"
             },
             "openai_chat": {
               "base_url": "https://api.openai.com/v1",
               "api_key_env": "OPENAI_API_KEY",
-              "model": "gpt-4o",
+              "models": ["gpt-4o", "gpt-4o-mini"],
+              "default_model": "gpt-4o",
               "protocol": "openai/chat"
             },
             "openai_response": {
               "base_url": "https://api.openai.com/v1",
               "api_key_env": "OPENAI_API_KEY",
-              "model": "gpt-4o",
+              "models": ["gpt-4o", "gpt-4o-mini"],
+              "default_model": "gpt-4o",
               "protocol": "openai/response"
             }
           },
-          "defaults": {"provider": "openai_chat", "temperature": 0.3},
+          "defaults": {"provider": "openai_chat", "temperature": 0.3, "default_model": "gpt-4o"},
           "nodes": {
-            "planner":  {"provider": "anthropic", "model": "claude-sonnet-4-20250514",
-                         "system": "你是需求分析专家"},
-            "coder":    {"provider": "openai_chat", "model": "gpt-4o"},
-            "debugger": {"provider": "mock"}
+            "planner":  {"provider": "anthropic", "system": "需求分析师"},
+            "coder":    {"provider": "openai_chat", "system": "高级工程师"},
+            "debugger": {"provider": "openai_chat"},
+            "reviewer": {"provider": "mock"}
           }
         }
 
-    每个节点的最终配置 = provider 协议默认 ← defaults ← 该节点 nodes[name]（后者优先）。
+    model 继承链（优先级从高到低）：
+      nodes[名称].model
+      → defaults.default_model
+      → provider.default_model
+      → provider.models[0]
     """
 
     def __init__(self, defaults: dict[str, Any | None] = None,
                  nodes: dict[str, dict[str, Any | None]] = None,
-                 providers: dict[str, dict[str, str | None]] = None):
+                 providers: dict[str, dict[str, Any]] = None):
         self._defaults = defaults or {}
         self._nodes = nodes or {}
         self._providers = providers or {}
@@ -219,6 +242,9 @@ class LLMRegistry:
         merged: dict[str, Any] = {}
         merged.update(self._defaults)
         merged.update(self._nodes.get(node, {}))
+        # 将 defaults.default_model 注入为 default_model（resolved 会用它做回退）
+        if "default_model" not in merged and "default_model" in self._defaults:
+            merged["default_model"] = self._defaults["default_model"]
         valid = {f.name for f in fields(NodeLLMConfig)}
         merged = {k: v for k, v in merged.items() if k in valid}
         if not merged:

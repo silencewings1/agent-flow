@@ -238,35 +238,38 @@ LLM 接入全部通过**配置文件**（JSON），每个节点可单独指定 p
     "anthropic": {
       "base_url": "https://api.anthropic.com",
       "api_key_env": "ANTHROPIC_API_KEY",
-      "model": "claude-sonnet-4-20250514",
+      "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"],
+      "default_model": "claude-sonnet-4-20250514",
       "protocol": "anthropic"
     },
     "openai_chat": {
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
-      "model": "gpt-4o",
+      "models": ["gpt-4o", "gpt-4o-mini"],
+      "default_model": "gpt-4o",
       "protocol": "openai/chat"
     },
     "openai_response": {
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
-      "model": "gpt-4o",
+      "models": ["gpt-4o", "gpt-4o-mini"],
+      "default_model": "gpt-4o",
       "protocol": "openai/response"
     }
   },
-  "defaults": { "provider": "openai_chat", "temperature": 0.3, "max_tokens": 2048 },
+  "defaults": { "provider": "openai_chat", "default_model": "gpt-4o", "temperature": 0.3, "max_tokens": 2048 },
   "nodes": {
-    "planner":  { "system": "你是资深需求分析师" },
-    "coder":    { "system": "你是高级工程师，只输出代码" },
-    "debugger": {},
+    "planner":  { "provider": "anthropic", "system": "你是资深需求分析师" },
+    "coder":    { "provider": "openai_chat", "system": "你是高级工程师，只输出代码" },
+    "debugger": { "provider": "openai_chat" },
     "reviewer": { "provider": "mock" }
   }
 }
 ```
 
-- **`providers`**：声明项目支持哪些厂商。`protocol` 字段决定 SDK——`"anthropic"`（Claude Messages API）、`"openai/chat"`（OpenAI Chat Completions，兼容第三方 OpenAI-compatible 服务）、`"openai/response"`（OpenAI Responses API）。
-- **`defaults`**：所有节点的默认配置。
-- **`nodes`**：每个节点的独立配置，优先级 `provider 协议默认 ← defaults ← nodes[name]`。
+- **`providers`**：声明项目支持哪些厂商。`models` 列表声明该 provider 可用模型，`default_model` 指定默认选用哪个。`protocol` 字段决定 SDK——`"anthropic"`（Claude Messages API）、`"openai/chat"`（OpenAI Chat Completions，兼容第三方 OpenAI-compatible 服务）、`"openai/response"`（OpenAI Responses API）。
+- **`defaults`**：所有节点的默认配置。`default_model` 在 nodes 不指定 model 时生效。
+- **`nodes`**：每个节点的独立配置。只需指定 `provider` 和 `system` 等业务参数，`model` 由继承链自动决定：`nodes[名称].model → defaults.default_model → provider.default_model → provider.models[0]`。
 - 当前 `ai_review` 节点使用 `reviewer` 这一路 LLM 配置名；它不是图拓扑里的单一 review 节点，人工评审仍由 `human_review` 负责。
 - 下划线开头的键（如 `_comment`）会被忽略，可用作注释。
 
@@ -379,20 +382,22 @@ PYTHONPATH=. python -m pytest test/ -q
 
 ### 接入其他 OpenAI 兼容厂商
 
-只需在 `llm_config.json` 的 `providers` 里加一项，按协议设置 `protocol` 字段：
+只需在 `llm_config.json` 的 `providers` 里加一项，用 `models` 列表声明可用模型：
 
 ```json
 "providers": {
   "my-chat": {
     "base_url": "https://your-api.com/v1",
     "api_key_env": "MY_API_KEY",
-    "model": "your-model",
+    "models": ["your-model"],
+    "default_model": "your-model",
     "protocol": "openai/chat"
   },
   "my-response": {
     "base_url": "https://your-api.com/v1",
     "api_key_env": "MY_API_KEY",
-    "model": "your-model",
+    "models": ["your-model"],
+    "default_model": "your-model",
     "protocol": "openai/response"
   }
 }
