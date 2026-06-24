@@ -2,54 +2,55 @@
   "_comment": "每节点 LLM 配置示例。复制为 llm_config.json 并按需修改。",
   "_comment2": "API Key 不写这里，改为设置对应环境变量（见 api_key_env）。",
   "_comment3": "最终配置 = provider 协议默认 ← providers 声明 ← defaults ← nodes[名称]。",
+  "_comment4": "base_url 使用 SDK 格式（不含 endpoint 路径，SDK 自行拼接）。",
 
   "providers": {
     "anthropic": {
-      "base_url": "https://api.anthropic.com/v1/messages",
+      "base_url": "https://api.anthropic.com",
       "api_key_env": "ANTHROPIC_API_KEY",
-      "model": "claude-opus-4-8",
+      "model": "claude-sonnet-4-20250514",
       "protocol": "anthropic"
     },
-    "openai": {
-      "base_url": "https://api.openai.com/v1/chat/completions",
+    "openai_chat": {
+      "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
       "model": "gpt-4o",
-      "protocol": "openai"
+      "protocol": "openai/chat"
     },
-    "volcengine": {
-      "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
-      "api_key_env": "VOLCENGINE_API_KEY",
-      "model": "ark-code-latest",
-      "protocol": "openai"
+    "openai_response": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "gpt-4o",
+      "protocol": "openai/response"
     }
   },
 
   "defaults": {
-    "provider": "volcengine",
-    "model": "ark-code-latest",
+    "provider": "openai_chat",
+    "model": "gpt-4o",
     "temperature": 0.3,
     "max_tokens": 2048
   },
 
   "nodes": {
     "planner": {
-      "provider": "volcengine",
-      "model": "ark-code-latest",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-20250514",
       "system": "你是资深需求分析师，把需求拆成清晰的子任务。",
       "temperature": 0.2
     },
     "coder": {
-      "provider": "volcengine",
-      "model": "ark-code-latest",
+      "provider": "openai_chat",
+      "model": "gpt-4o",
       "system": "你是高级工程师，只输出可运行代码。"
     },
     "debugger": {
-      "provider": "volcengine",
-      "model": "ark-code-latest"
+      "provider": "openai_chat",
+      "model": "gpt-4o"
     },
     "reviewer": {
-      "provider": "volcengine",
-      "model": "ark-code-latest"
+      "provider": "openai_chat",
+      "model": "gpt-4o"
     }
   }
 }

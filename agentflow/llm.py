@@ -1,25 +1,37 @@
 """LLM provider 抽象 + 每节点配置层。
 
-设计目标（对应用户需求）：
+设计目标：
 - 接入真实 API 的地方做成**配置文件**（JSON），每个节点可配置自己的 provider/模型/参数；
-- 同时支持 **Claude (Anthropic)** 与 **OpenAI** 兼容协议；
-- 通过配置文件顶层的 `providers` 字段声明项目支持哪些厂商，无需改代码；
+- 同时支持 **Anthropic Messages**、**OpenAI Chat Completions**、**OpenAI Responses** 三种协议；
+- 通过配置文件顶层的 `providers` 字段声明项目支持哪些厂商，`protocol` 字段区分协议类型；
 - 未配置或配置为 mock 时退化为离线桩，demo 无需任何 key 即可运行。
 
-依赖策略：沿用本项目「零三方依赖」原则，用标准库 urllib 直连 HTTP API，
-不强制安装 anthropic / openai SDK。
+协议类型：
+    anthropic        — Anthropic Messages API（通过 anthropic SDK）
+    openai/chat      — OpenAI Chat Completions API（通过 openai SDK）
+    openai/response  — OpenAI Responses API（通过 openai SDK）
+    mock             — 离线桩
 
 安全：API Key 默认从**环境变量**读取（api_key_env 指定变量名），不落配置文件。
 """
 
 import json
 import os
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, fields
 from typing import Any
 
-# mock 兜底：当 provider 未在配置文件中声明时使用
+# ── SDK imports ──────────────────────────────────────────────────────────
+try:
+    from openai import OpenAI
+except ImportError:  # pragma: no cover
+    OpenAI = None  # type: ignore[assignment,misc]
+
+try:
+    from anthropic import Anthropic
+except ImportError:  # pragma: no cover
+    Anthropic = None  # type: ignore[assignment,misc]
+
+
 _MOCK_PROVIDER: dict[str, str] = {
     "base_url": "", "api_key_env": "", "model": "mock", "protocol": "mock",
 }
@@ -30,13 +42,13 @@ class NodeLLMConfig:
     """单个节点的 LLM 配置。任一字段缺省时由 registry 用 defaults / provider 默认补全。"""
 
     provider: str = "mock"               # 配置中声明的 provider 名称
-    protocol: str | None = None       # HTTP 协议: anthropic | openai | mock（由 provider 定义决定）
+    protocol: str | None = None          # anthropic | openai/chat | openai/response | mock
     model: str | None = None
-    system: str | None = None         # system prompt
+    system: str | None = None            # system prompt / instructions
     temperature: float = 0.7
     max_tokens: int = 2048
-    api_key_env: str | None = None     # 读取 key 的环境变量名
-    base_url: str | None = None
+    api_key_env: str | None = None       # 读取 key 的环境变量名
+    base_url: str | None = None          # SDK base_url（不含 endpoint 路径）
     timeout: float = 60.0
 
     def resolved(self, providers: dict[str, dict[str, str | None]] = None) -> "NodeLLMConfig":
@@ -59,21 +71,6 @@ class NodeLLMConfig:
         )
 
 
-def _http_post_json(url: str, headers: dict[str, str], body: dict[str, Any],
-                    timeout: float) -> dict[str, Any]:
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "ignore")[:500]
-        # 不回显 key：只暴露状态码与服务端返回体
-        raise RuntimeError(f"LLM HTTP {e.code}: {detail}") from None
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"LLM 网络错误: {e.reason}") from None
-
-
 def _require_key(cfg: NodeLLMConfig) -> str:
     key = os.environ.get(cfg.api_key_env or "")
     if not key:
@@ -83,44 +80,67 @@ def _require_key(cfg: NodeLLMConfig) -> str:
     return key
 
 
+# ── SDK callers ──────────────────────────────────────────────────────────
+
 def _call_anthropic(cfg: NodeLLMConfig, prompt: str) -> str:
-    """Claude Messages API。"""
+    """Anthropic Messages API（通过 anthropic SDK）。"""
+    if Anthropic is None:
+        raise RuntimeError("anthropic SDK 未安装，请执行: pip install anthropic")
     key = _require_key(cfg)
-    headers = {
-        "x-api-key": key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-    body: dict[str, Any] = {
-        "model": cfg.model,
-        "max_tokens": cfg.max_tokens,
-        "temperature": cfg.temperature,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    if cfg.system:
-        body["system"] = cfg.system
-    resp = _http_post_json(cfg.base_url, headers, body, cfg.timeout)
-    # content 是 block 列表，拼接所有 text 块
-    parts = [b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text"]
+    client = Anthropic(api_key=key, base_url=cfg.base_url, timeout=cfg.timeout)
+    try:
+        response = client.messages.create(
+            model=cfg.model,
+            max_tokens=cfg.max_tokens,
+            temperature=cfg.temperature,
+            system=cfg.system or "You are a helpful assistant.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as e:
+        raise RuntimeError(f"Anthropic API 调用失败: {e}") from None
+    parts = [b.text for b in response.content if b.type == "text"]
     return "".join(parts).strip()
 
 
-def _call_openai(cfg: NodeLLMConfig, prompt: str) -> str:
-    """OpenAI Chat Completions API。"""
+def _call_openai_chat(cfg: NodeLLMConfig, prompt: str) -> str:
+    """OpenAI Chat Completions API（通过 openai SDK）。"""
+    if OpenAI is None:
+        raise RuntimeError("openai SDK 未安装，请执行: pip install openai")
     key = _require_key(cfg)
-    headers = {"authorization": f"Bearer {key}", "content-type": "application/json"}
-    messages = []
+    client = OpenAI(api_key=key, base_url=cfg.base_url, timeout=cfg.timeout)
+    messages: list[dict[str, str]] = []
     if cfg.system:
         messages.append({"role": "system", "content": cfg.system})
     messages.append({"role": "user", "content": prompt})
-    body = {
-        "model": cfg.model,
-        "messages": messages,
-        "temperature": cfg.temperature,
-        "max_tokens": cfg.max_tokens,
-    }
-    resp = _http_post_json(cfg.base_url, headers, body, cfg.timeout)
-    return resp["choices"][0]["message"]["content"].strip()
+    try:
+        response = client.chat.completions.create(
+            model=cfg.model,
+            messages=messages,
+            temperature=cfg.temperature,
+            max_tokens=cfg.max_tokens,
+        )
+    except Exception as e:
+        raise RuntimeError(f"OpenAI Chat API 调用失败: {e}") from None
+    return response.choices[0].message.content.strip()
+
+
+def _call_openai_response(cfg: NodeLLMConfig, prompt: str) -> str:
+    """OpenAI Responses API（通过 openai SDK）。"""
+    if OpenAI is None:
+        raise RuntimeError("openai SDK 未安装，请执行: pip install openai")
+    key = _require_key(cfg)
+    client = OpenAI(api_key=key, base_url=cfg.base_url, timeout=cfg.timeout)
+    try:
+        response = client.responses.create(
+            model=cfg.model,
+            input=prompt,
+            instructions=cfg.system or "You are a helpful assistant.",
+            temperature=cfg.temperature,
+            max_output_tokens=cfg.max_tokens,
+        )
+    except Exception as e:
+        raise RuntimeError(f"OpenAI Responses API 调用失败: {e}") from None
+    return response.output_text.strip()
 
 
 def _call_mock(cfg: NodeLLMConfig, prompt: str) -> str:
@@ -129,7 +149,12 @@ def _call_mock(cfg: NodeLLMConfig, prompt: str) -> str:
     return f"[mock:{cfg.model}] 针对「{head[:40]}」的生成结果"
 
 
-_DISPATCH = {"anthropic": _call_anthropic, "openai": _call_openai, "mock": _call_mock}
+_DISPATCH = {
+    "anthropic":        _call_anthropic,
+    "openai/chat":      _call_openai_chat,
+    "openai/response":  _call_openai_response,
+    "mock":             _call_mock,
+}
 
 
 class LLMRegistry:
@@ -138,22 +163,35 @@ class LLMRegistry:
     配置文件结构（JSON）：
         {
           "providers": {
-            "volcengine": {
-              "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
-              "api_key_env": "VOLCENGINE_API_KEY",
-              "model": "ark-code-latest"
+            "anthropic": {
+              "base_url": "https://api.anthropic.com",
+              "api_key_env": "ANTHROPIC_API_KEY",
+              "model": "claude-sonnet-4-20250514",
+              "protocol": "anthropic"
+            },
+            "openai_chat": {
+              "base_url": "https://api.openai.com/v1",
+              "api_key_env": "OPENAI_API_KEY",
+              "model": "gpt-4o",
+              "protocol": "openai/chat"
+            },
+            "openai_response": {
+              "base_url": "https://api.openai.com/v1",
+              "api_key_env": "OPENAI_API_KEY",
+              "model": "gpt-4o",
+              "protocol": "openai/response"
             }
           },
-          "defaults": {"provider": "anthropic", "temperature": 0.3},
+          "defaults": {"provider": "openai_chat", "temperature": 0.3},
           "nodes": {
-            "planner":  {"provider": "anthropic", "model": "claude-opus-4-8",
+            "planner":  {"provider": "anthropic", "model": "claude-sonnet-4-20250514",
                          "system": "你是需求分析专家"},
-            "coder":    {"provider": "openai",    "model": "gpt-4o"},
+            "coder":    {"provider": "openai_chat", "model": "gpt-4o"},
             "debugger": {"provider": "mock"}
           }
         }
-    `providers` 字段声明项目支持哪些厂商，可覆盖/扩展内置的 anthropic/openai/mock。
-    每个节点的最终配置 = provider 默认值 ← defaults ← 该节点 nodes[name]（后者优先）。
+
+    每个节点的最终配置 = provider 协议默认 ← defaults ← 该节点 nodes[name]（后者优先）。
     """
 
     def __init__(self, defaults: dict[str, Any | None] = None,
@@ -175,13 +213,12 @@ class LLMRegistry:
         path = path or os.environ.get("AGENTFLOW_LLM_CONFIG", "llm_config.json")
         if path and os.path.exists(path):
             return cls.from_file(path)
-        return cls()  # 空配置 → 所有节点走 mock
+        return cls()
 
     def config_for(self, node: str) -> NodeLLMConfig:
         merged: dict[str, Any] = {}
         merged.update(self._defaults)
         merged.update(self._nodes.get(node, {}))
-        # 只保留 NodeLLMConfig 的合法字段，忽略 _comment / _note 等注释键
         valid = {f.name for f in fields(NodeLLMConfig)}
         merged = {k: v for k, v in merged.items() if k in valid}
         if not merged:

@@ -53,11 +53,11 @@ demo/                # 按功能拆分的 8 个可运行 demo 场景
 ## 快速开始
 
 ```bash
-source /Users/ospacer/.py312/bin/activate
+source ~/.py_ai/bin/activate
 
 python -m demo                                      # 跑 8 个演示场景
 PYTHONPATH=. python -m pytest test/ -q              # 跑全部测试
-PYTHON312=/opt/homebrew/bin/python3 ./scripts/verify_py314.sh
+./scripts/verify_py314.sh                           # Python 3.14 现代语法全量验证
 ```
 
 项目代码无三方运行依赖，支持 Python 3.12+ 标准库，使用现代语法（match/case、PEP 604 `X | Y`、PEP 585 内建泛型、walrus `:=`、f-string 调试语法）。
@@ -228,7 +228,7 @@ app = build_graph_from_config(
 
 ## 接入真实 LLM：每节点独立配置
 
-LLM 接入全部通过**配置文件**（JSON），每个节点可单独指定 provider、模型与参数。所有厂商（包括 Anthropic、OpenAI、火山方舟等）均通过配置文件的 `providers` 字段声明，代码中不硬编码任何厂商。未配置的节点退化为 mock，demo 无需任何 key 即可离线运行。实现见 [llm.py](agentflow/llm.py)，零三方依赖（标准库 `urllib` 直连 HTTP API）。
+LLM 接入全部通过**配置文件**（JSON），每个节点可单独指定 provider、模型与参数。所有厂商均通过配置文件的 `providers` 字段声明，代码中不硬编码任何厂商。未配置的节点退化为 mock，demo 无需任何 key 即可离线运行。实现见 [llm.py](agentflow/llm.py)，使用 openai / anthropic 官方 SDK 接入。
 
 ### 配置文件结构
 
@@ -236,29 +236,35 @@ LLM 接入全部通过**配置文件**（JSON），每个节点可单独指定 p
 {
   "providers": {
     "anthropic": {
-      "base_url": "https://api.anthropic.com/v1/messages",
+      "base_url": "https://api.anthropic.com",
       "api_key_env": "ANTHROPIC_API_KEY",
-      "model": "claude-opus-4-8",
+      "model": "claude-sonnet-4-20250514",
       "protocol": "anthropic"
     },
-    "volcengine": {
-      "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
-      "api_key_env": "VOLCENGINE_API_KEY",
-      "model": "ark-code-latest",
-      "protocol": "openai"
-    }
-  },
-  "defaults": { "provider": "volcengine", "temperature": 0.3, "max_tokens": 2048 },
+	    "openai_chat": {
+	      "base_url": "https://api.openai.com/v1",
+	      "api_key_env": "OPENAI_API_KEY",
+	      "model": "gpt-4o",
+	      "protocol": "openai/chat"
+	    },
+	    "openai_response": {
+	      "base_url": "https://api.openai.com/v1",
+	      "api_key_env": "OPENAI_API_KEY",
+	      "model": "gpt-4o",
+	      "protocol": "openai/response"
+	    }
+	  },
+	  "defaults": { "provider": "openai_chat", "temperature": 0.3, "max_tokens": 2048 },
   "nodes": {
-    "planner":  { "model": "ark-code-latest", "system": "你是资深需求分析师" },
-    "coder":    { "model": "ark-code-latest", "system": "你是高级工程师，只输出代码" },
-    "debugger": { "model": "ark-code-latest" },
+    "planner":  { "model": "claude-sonnet-4-20250514", "system": "你是资深需求分析师" },
+    "coder":    { "model": "gpt-4o", "system": "你是高级工程师，只输出代码" },
+    "debugger": { "model": "gpt-4o" },
     "reviewer": { "provider": "mock" }
   }
 }
 ```
 
-- **`providers`**：声明项目支持哪些厂商。`protocol` 字段决定 HTTP API 格式——`"anthropic"`（Claude Messages API）或 `"openai"`（OpenAI Chat Completions，兼容火山方舟等）。
+- **`providers`**：声明项目支持哪些厂商。`protocol` 字段决定 SDK——`"anthropic"`（Claude Messages API）、`"openai/chat"`（OpenAI Chat Completions，兼容第三方 OpenAI-compatible 服务）、`"openai/response"`（OpenAI Responses API）。
 - **`defaults`**：所有节点的默认配置。
 - **`nodes`**：每个节点的独立配置，优先级 `provider 协议默认 ← defaults ← nodes[name]`。
 - 当前 `ai_review` 节点使用 `reviewer` 这一路 LLM 配置名；它不是图拓扑里的单一 review 节点，人工评审仍由 `human_review` 负责。
@@ -341,19 +347,16 @@ N.set_registry(reg)                        # 流水线节点据此调用对应 p
 cp conf/llm_config.example.json llm_config.json
 ```
 
-默认配置使用火山方舟（volcengine）的 `ark-code-latest` 模型。你也可以编辑 `llm_config.json` 自由切换厂商和模型。
+默认配置使用 OpenAI 的 `gpt-4o` 模型。你也可以编辑 `llm_config.json` 自由切换厂商和模型。
 
 ### 2) 设置 API Key
 
 ```bash
-# 火山方舟
-export VOLCENGINE_API_KEY="your-api-key-here"
+# 设置环境变量（按你使用的 provider）
+export OPENAI_API_KEY="sk-..."
 
 # 如果用 Anthropic
 export ANTHROPIC_API_KEY="sk-ant-..."
-
-# 如果用 OpenAI
-export OPENAI_API_KEY="sk-..."
 ```
 
 API Key 只从环境变量读取，不落磁盘。
@@ -362,29 +365,35 @@ API Key 只从环境变量读取，不落磁盘。
 
 ```bash
 # 跑全部演示场景（无 Key 也能跑，LLM 调用自动降级为 mock）
-source /Users/ospacer/.py37/bin/activate
+source ~/.py_ai/bin/activate
 python -m demo
 
 # 跑所有测试
 PYTHONPATH=. python -m pytest test/ -q
 
-# Python 3.7 兼容性全量验证
-PYTHON37=/Users/ospacer/.py37/bin/python ./scripts/verify_py37.sh
+# Python 3.14 现代语法全量验证
+./scripts/verify_py314.sh
 ```
 
 **项目代码无三方运行依赖**，Python 3.7+ 标准库即可。
 
 ### 接入其他 OpenAI 兼容厂商
 
-只需在 `llm_config.json` 的 `providers` 里加一项，设置 `"protocol": "openai"` 即可：
+只需在 `llm_config.json` 的 `providers` 里加一项，按协议设置 `protocol` 字段：
 
 ```json
 "providers": {
-  "my-provider": {
-    "base_url": "https://your-api.com/v1/chat/completions",
+  "my-chat": {
+    "base_url": "https://your-api.com/v1",
     "api_key_env": "MY_API_KEY",
     "model": "your-model",
-    "protocol": "openai"
+    "protocol": "openai/chat"
+  },
+  "my-response": {
+    "base_url": "https://your-api.com/v1",
+    "api_key_env": "MY_API_KEY",
+    "model": "your-model",
+    "protocol": "openai/response"
   }
 }
 ```

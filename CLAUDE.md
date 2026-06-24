@@ -5,13 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# 默认使用 Python 3.7 环境（dev_py37 兼容性要求）
-source /Users/ospacer/.py37/bin/activate
+# 默认使用 Python 3.14 环境
+source ~/.py_ai/bin/activate
 
 python -m demo                                      # Run all 8 demo scenarios
 PYTHONPATH=. python test/test_invariants.py          # Run invariant tests
 PYTHONPATH=. python -m pytest test/ -v              # Run all test suites
-./scripts/verify_py37.sh                            # 3.7 兼容性全量验证（需 3.7 环境）
 ```
 
 No dependencies beyond Python 3.7+ standard library.
@@ -26,7 +25,7 @@ A zero-dependency DAG orchestration kernel that combines AgentMesh-style role no
 - **`agentflow/state.py`** — `StateSchema` with per-key reducers. Default is `overwrite_reducer`; `append_reducer` accumulates lists (used for logs and fan-out merges). `merge()` always returns a new dict (no in-place mutation).
 - **`agentflow/checkpoint.py`** — Event-sourcing SQLite checkpointer. Each super-step writes a `Checkpoint` (state snapshot + frontier). The frontier only contains nodes yet to run, so **resume never replays completed nodes** — this is the hard invariant tested in `test_invariants.py`. Also maintains an append-only event log for audit/time-travel.
 - **`agentflow/interrupt.py`** — HITL primitives: `Interrupt` exception (pauses the graph), `Command(resume=...)` (injects human response on resume). `interrupt(payload, resume_value)` returns `resume_value` on replay or raises `Interrupt` on first execution.
-- **`agentflow/llm.py`** — `LLMRegistry` loads per-node LLM config from JSON. Each node resolves `provider → protocol → (anthropic|openai|mock)`. Uses stdlib `urllib` for HTTP calls (no SDK dependency). API keys read from env vars only, never from config file. Unconfigured nodes fall back to mock.
+- **`agentflow/llm.py`** — `LLMRegistry` loads per-node LLM config from JSON. Each node resolves `provider → protocol → (anthropic|openai/chat|openai/response|mock)`. Uses openai / anthropic official SDKs. API keys read from env vars only, never from config file. Unconfigured nodes fall back to mock.
 - **`agentflow/nodes.py`** — Four AgentMesh nodes (planner, coder, debugger, reviewer) + conditional routing functions. **Control flow is deterministic** (task splitting, version gating, pass/fail decisions) — LLM only produces content text, so the pipeline is reproducible without real API keys.
 
 ### Key design decisions
@@ -38,7 +37,7 @@ A zero-dependency DAG orchestration kernel that combines AgentMesh-style role no
 
 ### Adding a new LLM provider
 
-Add an entry to `llm_config.json` under `providers` with `protocol: "openai"` (for OpenAI-compatible APIs) or `protocol: "anthropic"`. No code changes needed. The `protocol` field maps to the dispatch table in `llm.py:_DISPATCH`.
+Add an entry to `llm_config.json` under `providers` with `protocol: "openai/chat"` (Chat Completions), `protocol: "openai/response"` (Responses API), or `protocol: "anthropic"`. No code changes needed. The `protocol` field maps to the dispatch table in `llm.py:_DISPATCH`.
 
 ## Multi-session collaboration (多窗口协作)
 

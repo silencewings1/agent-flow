@@ -1,10 +1,10 @@
 # Demo 使用说明
 
-`demo/` 目录按功能拆分了 8 个可运行场景。所有 demo 均可在仓库根目录执行，推荐使用 Python 3.7 环境：
+`demo/` 目录按功能拆分了 8 个可运行场景。所有 demo 均可在仓库根目录执行，推荐使用 Python 3.14 环境：
 
 ```bash
 cd /Users/ospacer/cpp_test/agent-flow
-source /Users/ospacer/.py37/bin/activate
+source ~/.py_ai/bin/activate
 ```
 
 ## 跑全部场景
