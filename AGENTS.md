@@ -46,17 +46,17 @@ Add an entry to `llm_config.json` under `providers` with `protocol: "openai"` (f
 
 | 窗口 | 角色 | 职责 | 产出 |
 |------|------|------|------|
-| 窗口 1 | **项目经理** | 需求分析、任务拆分、方案设计、进度跟踪 | `docs/plan.md`、Memory |
+| 窗口 1 | **项目经理** | 需求分析、任务拆分、方案设计、进度跟踪 | `plan/plan.md`、Memory |
 | 窗口 2 | **开发** | 按需求文档写代码、修 bug、跑 demo | 代码变更 + git commit |
-| 窗口 3 | **代码审查及测试** | review diff、运行测试、记录问题 | `docs/review-notes.md` |
+| 窗口 3 | **代码审查及测试** | review diff、运行测试、记录问题 | `plan/review-notes.md` |
 
 ### 协作流程（关键：CR 不可跳过）
 
 ```
-窗口 1(PM)：需求分析 → 产出 docs/plan.md + 写入 Memory
-窗口 2(Dev)：读取 docs/plan.md → 写代码实现 → git commit
-窗口 3(CR)：  git diff 看改动 → 跑测试 → 产出 docs/review-notes.md
-窗口 2(Dev)：读取 review-notes.md → 修 bug → 再次 commit
+窗口 1(PM)：需求分析 → 产出 plan/plan.md + 写入 Memory
+窗口 2(Dev)：读取 plan/plan.md → 写代码实现 → git commit
+窗口 3(CR)：  git diff 看改动 → 跑测试 → 产出 plan/review-notes.md
+窗口 2(Dev)：读取 plan/review-notes.md → 修 bug → 再次 commit
 窗口 1(PM)：CR 确认通过 → git merge → 删除 feature 分支
 ```
 
@@ -70,7 +70,8 @@ PM 在子 agent 中担任的角色：打开多个 agent，分别承担 Dev、CR 
 
 会话之间不能直接对话，通过以下机制同步：
 
-- **`docs/` 目录** — 需求和设计文档，开发窗口实现前先读取；审查反馈也写入此目录
+- **`plan/` 目录** — 项目计划（`plan-*.md`）、审查产出（`review-notes*.md`、`review-checklist*.md`），开发窗口实现前先读取；审查反馈也写入此目录
+- **`docs/` 目录** — 知识库（研究报告、分析报告等长期参考文档），不用于日常协作流转
 - **Memory 系统** — 项目经理把关键决策、里程碑、约束写入 memory，所有窗口自动加载
 - **git log / diff** — 开发窗口 commit 后，审查窗口通过 `git diff` 获取改动
 - **Git worktree** — 如需并行开发多个分支互不干扰，使用 `EnterWorktree` 创建隔离工作区
