@@ -34,7 +34,7 @@ def run_llm_config() -> None:
                 "protocol": "openai/response",
             },
         },
-        defaults={"provider": "openai_chat", "default_model": "gpt-4o", "temperature": 0.3},
+        defaults={"provider": "openai_chat", "default_model": "gpt-4o"},
         nodes={
             "planner": {"provider": "anthropic", "system": "需求分析师"},
             "coder": {"provider": "openai_chat", "system": "高级工程师"},

@@ -219,25 +219,5 @@ class Checkpointer:
             for r in rows
         ]
 
-    def tool_call_summary(self, thread_id: str) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT node, COUNT(*) AS calls, "
-            "ROUND(SUM(duration_ms), 2) AS total_duration_ms, "
-            "ROUND(AVG(duration_ms), 2) AS avg_duration_ms, "
-            "SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS successes, "
-            "SUM(CASE WHEN status!='success' THEN 1 ELSE 0 END) AS failures "
-            "FROM tool_calls WHERE thread_id=? "
-            "GROUP BY node ORDER BY node",
-            (thread_id,),
-        ).fetchall()
-        return [
-            {
-                "node": r[0], "calls": r[1],
-                "total_duration_ms": r[2], "avg_duration_ms": r[3],
-                "successes": r[4], "failures": r[5],
-            }
-            for r in rows
-        ]
-
     def close(self) -> None:
         self._conn.close()

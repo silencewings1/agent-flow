@@ -9,7 +9,7 @@
 START / END 是两个保留节点名，分别表示入口与出口。
 """
 
-import ast
+import re
 import copy
 import hashlib
 import json
@@ -533,82 +533,12 @@ class StateGraph:
         return issues
 
     def _static_string_returns(self, fn: RouterFn) -> Set[str]:
-        """从路由函数源码中提取所有字符串字面量 return 值（启发式）。
-
-        处理直接 return、if/else 三元、and/or 短路、列表/元组等组合形式；
-        仅看 AST 字面量，不模拟实际控制流，所以会有少量误报（warning 级别
-        本来就允许噪声）。
-        """
-        literals: Set[str] = set()
+        """从路由函数源码中提取所有 return 的字符串字面量（启发式，仅用于 warning）。"""
         try:
             src = _get_source(fn)
         except (OSError, TypeError):
-            return literals
-        try:
-            tree = ast.parse(src)
-        except SyntaxError:
-            return literals
-
-        def walk(expr: ast.AST) -> None:
-            if expr is None:
-                return
-            if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
-                literals.add(expr.value)
-                return
-            ast_str = getattr(ast, "Str", None)
-            if ast_str is not None and isinstance(expr, ast_str):
-                literals.add(expr.s)
-                return
-            if isinstance(expr, (ast.IfExp, ast.BoolOp)):
-                # 三元 / and-or：所有分支都可能是返回值
-                if isinstance(expr, ast.IfExp):
-                    walk(expr.body)
-                    walk(expr.orelse)
-                else:
-                    for v in expr.values:
-                        walk(v)
-                return
-            if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
-                for elt in expr.elts:
-                    walk(elt)
-                return
-            if isinstance(expr, ast.Dict):
-                for v in expr.values:
-                    walk(v)
-                return
-            if isinstance(expr, ast.Call):
-                # 函数调用的返回值无法静态分析，保守忽略
-                return
-            # 其它节点（Name、Attribute 等）— 不递归到子节点，宁缺勿滥
-
-        # 手动遍历而非 ast.walk：先定位被分析的 root function（route_ghost 等
-        # 模块级函数 def，对应 inspect.getsource 返回的源码的顶层 FunctionDef），
-        # 再遍历其 body，遇到嵌套函数/lambda 直接跳过其子树，避免把
-        # `def helper(): return "ghost"` 这种辅助函数的 return 误提取为
-        # 路由函数的可能目标。
-        _SKIP_SUBTREE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
-        root = None
-        if isinstance(tree, ast.Module) and tree.body:
-            first = tree.body[0]
-            if isinstance(first, _SKIP_SUBTREE):
-                root = first
-
-        if root is None:
-            # fallback：源码不是单函数（如 eval 字符串 / 模块顶层 return）
-            # 退到 ast.walk，不做嵌套过滤，宁可误报也不漏报
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Return) and node.value is not None:
-                    walk(node.value)
-        else:
-            def visit(n: ast.AST) -> None:
-                for child in ast.iter_child_nodes(n):
-                    if isinstance(child, _SKIP_SUBTREE):
-                        continue  # 嵌套函数/lambda：跳子树，不递归
-                    if isinstance(child, ast.Return) and child.value is not None:
-                        walk(child.value)
-                    visit(child)
-            visit(root)
-        return literals
+            return set()
+        return set(re.findall(r"""return\s+["']([^"']+)["']""", src))
 
     def _barrier_targets_from(self, node: str) -> list[str]:
         return [b.target for b in self._barriers if node in b.sources]

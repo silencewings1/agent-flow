@@ -4,43 +4,46 @@
   "_comment3": "providers.models 列表声明可用模型，nodes 中只需选择 model 名称。",
   "_comment4": "model 继承链：nodes.model → defaults.default_model → provider.default_model → provider.models[0]。",
   "_comment5": "base_url 使用 SDK 格式（不含 endpoint 路径，SDK 自行拼接）。",
-
   "providers": {
     "anthropic": {
       "base_url": "https://api.anthropic.com",
       "api_key_env": "ANTHROPIC_API_KEY",
-      "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"],
+      "models": [
+        "claude-sonnet-4-20250514",
+        "claude-opus-4-20250514"
+      ],
       "default_model": "claude-sonnet-4-20250514",
       "protocol": "anthropic"
     },
     "openai_chat": {
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
-      "models": ["gpt-4o", "gpt-4o-mini"],
+      "models": [
+        "gpt-4o",
+        "gpt-4o-mini"
+      ],
       "default_model": "gpt-4o",
       "protocol": "openai/chat"
     },
     "openai_response": {
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
-      "models": ["gpt-4o", "gpt-4o-mini"],
+      "models": [
+        "gpt-4o",
+        "gpt-4o-mini"
+      ],
       "default_model": "gpt-4o",
       "protocol": "openai/response"
     }
   },
-
   "defaults": {
     "provider": "openai_chat",
-    "default_model": "gpt-4o",
-    "temperature": 0.3,
-    "max_tokens": 2048
+    "default_model": "gpt-4o"
   },
-
   "nodes": {
     "planner": {
       "provider": "anthropic",
-      "system": "你是资深需求分析师，把需求拆成清晰的子任务。",
-      "temperature": 0.2
+      "system": "你是资深需求分析师，把需求拆成清晰的子任务。"
     },
     "coder": {
       "provider": "openai_chat",

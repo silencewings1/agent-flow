@@ -88,29 +88,25 @@ def _check_no_dotdot(path: str) -> None:
 
 
 def _check_paths_in_workdir(cmd: str, cmd_name: str, workdir: str) -> None:
-    """对 cat/ls 类文件读命令，校验所有路径参数都落在 workdir 内。
+    """对 cat/ls 类命令，校验所有绝对路径参数都落在 workdir 内。
 
     解决 CR 2026-06-17 1.2 提出的问题：白名单只校验首段 basename，
     `cat /etc/passwd` 这种带绝对路径的命令原本会被放行。
 
-    实现：shlex 拆 token → 跳过选项（以 - 开头）→ 解析为绝对路径 →
-    校验前缀在 workdir 内。
+    实现：shlex 拆 token → 跳过选项 → 绝对路径委托给 _resolve_within_workdir 校验。
     """
     import shlex
-    workdir_real = os.path.realpath(workdir)
     for token in shlex.split(cmd)[1:]:  # 跳过命令名本身
         if not token or token.startswith("-"):
             continue
-        # 引号已被 shlex 剥掉
         if os.path.isabs(token):
-            # 绝对路径：必须落在 workdir 内
-            real = os.path.realpath(token)
-            if not (real == workdir_real or real.startswith(workdir_real + os.sep)):
+            try:
+                _resolve_within_workdir(workdir, token)
+            except PermissionError:
                 raise PermissionError(
                     f"run_cmd {repr(cmd_name)} 拒绝绝对路径 {repr(token)}："
-                    f"必须落在 workdir {workdir_real} 内"
+                    f"必须落在 workdir {os.path.realpath(workdir)} 内"
                 )
-        # 相对路径：subprocess 已经在 cwd=workdir 下跑，自动安全，无需校验
 
 
 def _resolve_within_workdir(workdir: str, path: str) -> str:

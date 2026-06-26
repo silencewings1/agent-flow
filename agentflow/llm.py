@@ -48,8 +48,6 @@ class NodeLLMConfig:
     model: str | None = None
     default_model: str | None = None     # 从 defaults.default_model 或 provider.default_model 继承
     system: str | None = None            # system prompt / instructions
-    temperature: float = 0.7
-    max_tokens: int = 2048
     api_key_env: str | None = None       # 读取 key 的环境变量名
     base_url: str | None = None          # SDK base_url（不含 endpoint 路径）
     timeout: float = 60.0
@@ -79,8 +77,6 @@ class NodeLLMConfig:
             protocol=self.protocol or d.get("protocol", "mock"),
             model=model,
             system=self.system,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
             api_key_env=self.api_key_env or d["api_key_env"],
             base_url=self.base_url or d["base_url"],
             timeout=self.timeout,
@@ -107,8 +103,7 @@ def _call_anthropic(cfg: NodeLLMConfig, prompt: str) -> str:
     try:
         response = client.messages.create(
             model=cfg.model,
-            max_tokens=cfg.max_tokens,
-            temperature=cfg.temperature,
+            max_tokens=2048,
             system=cfg.system or "You are a helpful assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
@@ -132,8 +127,7 @@ def _call_openai_chat(cfg: NodeLLMConfig, prompt: str) -> str:
         response = client.chat.completions.create(
             model=cfg.model,
             messages=messages,
-            temperature=cfg.temperature,
-            max_tokens=cfg.max_tokens,
+            max_tokens=2048,
         )
     except Exception as e:
         raise RuntimeError(f"OpenAI Chat API 调用失败: {e}") from None
@@ -151,8 +145,7 @@ def _call_openai_response(cfg: NodeLLMConfig, prompt: str) -> str:
             model=cfg.model,
             input=prompt,
             instructions=cfg.system or "You are a helpful assistant.",
-            temperature=cfg.temperature,
-            max_output_tokens=cfg.max_tokens,
+            max_output_tokens=2048,
         )
     except Exception as e:
         raise RuntimeError(f"OpenAI Responses API 调用失败: {e}") from None

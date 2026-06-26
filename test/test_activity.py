@@ -250,7 +250,7 @@ def test_tool_calls_logged():
 
 
 def test_tool_call_summary():
-    """tool_call_summary 按 node 聚合统计正确。"""
+    """tool_calls 记录正确，调用方可自行聚合统计。"""
     counter: dict[tuple[str, str], int] = {}
 
     def multi_call_node(state, ctx):
@@ -268,21 +268,24 @@ def test_tool_call_summary():
     r = app.invoke({}, thread_id="t_summary")
     assert r.status == "completed"
 
-    summary = cp.tool_call_summary("t_summary")
-    assert len(summary) == 1, f"应有 1 个节点统计，实际 {len(summary)}"
-    s = summary[0]
-    assert s["node"] == "mc"
-    assert s["calls"] == 2, f"mc 节点应有 2 次调用，实际 {s['calls']}"
-    assert s["successes"] == 2
-    assert s["failures"] == 0
-    assert s["total_duration_ms"] >= 0
-
-    # 验证 seq 正确递增
+    # 调用方自行聚合统计
     records = cp.tool_calls("t_summary")
     assert len(records) == 2
+    by_node: dict[str, list] = {}
+    for rec in records:
+        by_node.setdefault(rec["node"], []).append(rec)
+    assert list(by_node.keys()) == ["mc"]
+    s = by_node["mc"]
+    assert len(s) == 2
+    assert all(r["status"] == "success" for r in s)
+    assert all(r["duration_ms"] >= 0 for r in s)
+    total = sum(r["duration_ms"] for r in s)
+    assert total >= 0
+
+    # 验证 seq 正确递增
     assert records[0]["seq"] == 0, f"第一条 seq 应为 0，实际 {records[0]['seq']}"
     assert records[1]["seq"] == 1, f"第二条 seq 应为 1，实际 {records[1]['seq']}"
-    print(f"✅ test_tool_call_summary 通过 (calls={s['calls']}, total={s['total_duration_ms']}ms)")
+    print(f"✅ test_tool_call_summary 通过 (calls={len(s)}, total={total:.2f}ms)")
 
 
 def test_tool_call_not_logged_on_cache_hit():

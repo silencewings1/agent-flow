@@ -225,13 +225,12 @@ def debugger(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
     import re
     import os as _os
 
-    # 无 workdir：fallback 到旧行为（兼容 scenario 1-5）
-    if not workdir or not artifacts:
-        passed = version >= (state.get("pass_at_version") or 3)
-        failures = [] if passed else [f"子任务 {t} 的用例未通过" for t in state["tasks"][:1]]
+    def _fallback(passed: bool, failures: list, reason: str) -> dict[str, Any]:
+        """公共 fallback：LLM 总结 + 组装返回值。"""
         try:
             report = ctx.activity("llm_complete", lambda: get_registry().complete(
-                "debugger", f"对 v{version} 代码做测试评估，是否通过：{passed}",
+                "debugger",
+                f"{reason}，对 v{version} 代码做测试评估，是否通过：{passed}",
                 system="你是测试工程师，输出简短测试结论。",
             ))
         except Exception:
@@ -240,8 +239,14 @@ def debugger(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
             "tests_passed": passed,
             "test_failures": failures,
             "test_report": report,
-            "log": [f"[Debugger] 测试 v{version}: {'通过' if passed else '失败 → 退回 Coder'}"],
+            "log": [f"[Debugger] {reason}，测试 v{version}: {'通过' if passed else '失败 → 退回 Coder'}"],
         }
+
+    # 无 workdir：fallback 到旧行为（兼容 scenario 1-5）
+    if not workdir or not artifacts:
+        passed = version >= (state.get("pass_at_version") or 3)
+        failures = [] if passed else [f"子任务 {t} 的用例未通过" for t in state["tasks"][:1]]
+        return _fallback(passed, failures, "无 workdir")
 
     # 发现测试文件：**/test_*.py + **/*_test.py（相对于 workdir）
     test_files = []
@@ -262,14 +267,11 @@ def debugger(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
         }
 
     # 跑 pytest
-    # 用 subprocess 直接跑在 workdir 内（不用 ToolRuntime，因为 ToolRuntime 有自己的
-    # 沙箱 workdir，而 pytest 需要在源代码所在的 workdir 内跑才能正确 import）
-    # 注意：必须用 "pytest" 直接命令（python3 已移出 run_cmd 白名单）
     import shlex
     import subprocess as _subprocess
     import time as _time
 
-    # CR Backlog 2026-06-18 2.2: 探测 pytest 是否可用
+    # 探测 pytest 是否可用
     try:
         _probe = _subprocess.run(
             ["pytest", "--version"], capture_output=True, text=True, timeout=5,
@@ -279,26 +281,12 @@ def debugger(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
         _pytest_available = False
 
     if not _pytest_available:
-        # 无 pytest → fallback 到旧 pass_at_version 行为
         passed = version >= (state.get("pass_at_version") or 3)
         failures = [] if passed else [
             {"test_name": "pytest_unavailable",
              "error_msg": "pytest 不可用，使用 pass_at_version 判定"}
         ]
-        try:
-            report = ctx.activity("llm_complete", lambda: get_registry().complete(
-                "debugger",
-                f"pytest 不可用，对 v{version} 代码做测试评估，是否通过：{passed}",
-                system="你是测试工程师，输出简短测试结论。",
-            ))
-        except Exception:
-            report = "[LLM 不可用，使用确定性测试结论]"
-        return {
-            "tests_passed": passed,
-            "test_failures": failures,
-            "test_report": report,
-            "log": [f"[Debugger] pytest 不可用，测试 v{version}: {'通过' if passed else '失败 → 退回 Coder'}"],
-        }
+        return _fallback(passed, failures, "pytest 不可用")
     test_files_arg = " ".join(shlex.quote(path) for path in test_files)
     cmd = f"pytest {test_files_arg} --tb=short -q"
 

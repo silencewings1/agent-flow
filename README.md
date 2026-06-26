@@ -17,7 +17,7 @@
 | 错误恢复与重试 | `add_node(..., retries=N)` 节点级重试 |
 | 时间旅行 | `Checkpointer.history()` / `.events()` |
 | **Activity 缓存（P0-1）** | `ctx.activity(key, fn)` — 以 `(thread_id, node, step, key)` 为键，中断恢复不重跑 LLM |
-| **工具调用持久化（P0-2）** | `Checkpointer.tool_calls()` / `.tool_call_summary()` — 自动记录每次 activity 执行 |
+| **工具调用持久化（P0-2）** | `Checkpointer.tool_calls()` — 自动记录每次 activity 执行 |
 | **图校验 + Mermaid（P0-3）** | `StateGraph.validate()` + `.to_mermaid()` — 编译前静态校验 + 可视化导出 |
 
 ## 目录结构
@@ -158,12 +158,6 @@ records = checkpointer.tool_calls(thread_id)
 # 返回示例：
 # [{"seq": 0, "node": "planner", "tool_name": "llm_complete",
 #   "duration_ms": 123.45, "status": "success", ...}, ...]
-
-# 按节点聚合统计
-summary = checkpointer.tool_call_summary(thread_id)
-# 返回示例：
-# [{"node": "planner", "calls": 1, "total_duration_ms": 1234.56,
-#   "avg_duration_ms": 1234.56, "successes": 1, "failures": 0}, ...]
 ```
 
 每条记录含：`thread_id/seq/node/step/tool_name/activity_key/input_summary/output_summary/duration_ms/status/ts`。
@@ -257,7 +251,7 @@ LLM 接入全部通过**配置文件**（JSON），每个节点可单独指定 p
       "protocol": "openai/response"
     }
   },
-  "defaults": { "provider": "openai_chat", "default_model": "gpt-4o", "temperature": 0.3, "max_tokens": 2048 },
+  "defaults": { "provider": "openai_chat", "default_model": "gpt-4o" },
   "nodes": {
     "planner":  { "provider": "anthropic", "system": "你是资深需求分析师" },
     "coder":    { "provider": "openai_chat", "system": "你是高级工程师，只输出代码" },
@@ -298,7 +292,6 @@ N.set_registry(reg)                        # 流水线节点据此调用对应 p
 - **异常被缓存并重抛**，保留原始异常类型
 - **复杂类型（dict/list）序列化/反序列化**正确
 - **首次调用自动写入 tool_calls**，缓存命中不新增
-- **tool_call_summary 按 node 聚合统计**正确
 
 `test/test_graph.py` 验证图校验 + Mermaid：
 - **合法图 validate() 无 error**
