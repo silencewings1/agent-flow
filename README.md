@@ -233,37 +233,32 @@ LLM 接入全部通过**配置文件**（JSON），每个节点可单独指定 p
       "base_url": "https://api.anthropic.com",
       "api_key_env": "ANTHROPIC_API_KEY",
       "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"],
-      "default_model": "claude-sonnet-4-20250514",
       "protocol": "anthropic"
     },
     "openai_chat": {
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
       "models": ["gpt-4o", "gpt-4o-mini"],
-      "default_model": "gpt-4o",
       "protocol": "openai/chat"
     },
     "openai_response": {
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
       "models": ["gpt-4o", "gpt-4o-mini"],
-      "default_model": "gpt-4o",
       "protocol": "openai/response"
     }
   },
-  "defaults": { "provider": "openai_chat", "default_model": "gpt-4o" },
   "nodes": {
-    "planner":  { "provider": "anthropic", "system": "你是资深需求分析师" },
-    "coder":    { "provider": "openai_chat", "system": "你是高级工程师，只输出代码" },
-    "debugger": { "provider": "openai_chat" },
+    "planner":  { "provider": {"name": "anthropic", "model": "claude-sonnet-4-20250514"} },
+    "coder":    { "provider": {"name": "openai_chat", "model": "gpt-4o"} },
+    "debugger": { "provider": {"name": "openai_chat", "model": "gpt-4o"} },
     "reviewer": { "provider": "mock" }
   }
 }
 ```
 
-- **`providers`**：声明项目支持哪些厂商。`models` 列表声明该 provider 可用模型，`default_model` 指定默认选用哪个。`protocol` 字段决定 SDK——`"anthropic"`（Claude Messages API）、`"openai/chat"`（OpenAI Chat Completions，兼容第三方 OpenAI-compatible 服务）、`"openai/response"`（OpenAI Responses API）。
-- **`defaults`**：所有节点的默认配置。`default_model` 在 nodes 不指定 model 时生效。
-- **`nodes`**：每个节点的独立配置。只需指定 `provider` 和 `system` 等业务参数，`model` 由继承链自动决定：`nodes[名称].model → defaults.default_model → provider.default_model → provider.models[0]`。
+- **`providers`**：声明项目支持哪些厂商。`models` 列表声明可用模型，`protocol` 字段决定 SDK——`"anthropic"`（Claude Messages API）、`"openai/chat"`（OpenAI Chat Completions，兼容第三方 OpenAI-compatible 服务）、`"openai/response"`（OpenAI Responses API）。
+- **`nodes`**：每个节点的独立配置。`provider` 可以是 `{"name": "...", "model": "..."}` 对象（指定厂商和模型），也可以是纯字符串 `"mock"`（使用 mock 桩）。可选加 `prompt` 字段，每次 LLM 调用时自动前置定制指令。
 - 当前 `ai_review` 节点使用 `reviewer` 这一路 LLM 配置名；它不是图拓扑里的单一 review 节点，人工评审仍由 `human_review` 负责。
 - 下划线开头的键（如 `_comment`）会被忽略，可用作注释。
 

@@ -1,5 +1,7 @@
 .claude/
 .vscode/
 llm_config.json
+# sample.py
 
 */__pycache__/*
+__pycache__/

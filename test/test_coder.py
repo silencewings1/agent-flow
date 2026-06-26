@@ -83,12 +83,14 @@ def test_coder_artifacts_list_correct():
 
         plan_tasks = res.state["plan"]["tasks"]
         artifacts = res.state.get("artifacts", [])
-        assert len(artifacts) == len(plan_tasks), \
-            f"artifacts 数量 {len(artifacts)} 应等于 plan.tasks 数量 {len(plan_tasks)}"
+        assert len(artifacts) == len(plan_tasks) * 2, \
+            f"artifacts 数量 {len(artifacts)} 应等于 plan.tasks 数量 {len(plan_tasks)} * 2（每个 task 含实现+测试）"
 
         for i, task in enumerate(plan_tasks):
-            expected = f"src/task_{task['id']}.py"
-            assert artifacts[i] == expected, f"artifacts[{i}] 应为 {expected}，得到 {artifacts[i]}"
+            expected_src = f"src/task_{task['id']}.py"
+            expected_test = f"src/test_task_{task['id']}.py"
+            assert artifacts[i * 2] == expected_src, f"artifacts[{i*2}] 应为 {expected_src}，得到 {artifacts[i*2]}"
+            assert artifacts[i * 2 + 1] == expected_test, f"artifacts[{i*2+1}] 应为 {expected_test}，得到 {artifacts[i*2+1]}"
 
         # 验证每个 artifact 对应文件确实存在
         for art in artifacts:
@@ -189,12 +191,10 @@ def test_coder_with_feedback():
     with tempfile.TemporaryDirectory(prefix="af-test-") as workdir:
         # 使用 mock registry，让 LLM 总是返回固定文本
         class FeedbackMockRegistry(LLMRegistry):
-            def complete(self, node, prompt, *, system=None):
-                # 验证 prompt 中包含了 feedback
-                if "test_failures" not in self._last_prompt:
-                    self._last_prompt = prompt
+            def complete(self, node, prompt, *, system_prompt=None):
+                self._all_prompts.append(prompt)
                 return "mock code with fixes"
-            _last_prompt = ""
+            _all_prompts = []
 
         reg = FeedbackMockRegistry(
             providers={},
@@ -224,10 +224,10 @@ def test_coder_with_feedback():
         assert res.status == "completed", res.status
         # coder 不应抛异常
         assert res.state["code_version"] == 1
-        # 验证 prompt 中确实包含了 test_failures 的 feedback 内容
-        assert "NullPointerException" in reg._last_prompt, \
-            f"feedback 未注入 prompt: {reg._last_prompt[:200]}"
-    print("test_coder_with_feedback 通过")
+        # 验证至少有一个 prompt 包含了 feedback
+        assert any("NullPointerException" in p for p in reg._all_prompts), \
+            f"feedback 未注入任何 prompt: {reg._all_prompts}"
+        print("test_coder_with_feedback 通过")
 
 
 # —— 用例 7：兼容旧场景（无 plan，只有 state["tasks"]）—— #
@@ -251,7 +251,7 @@ def test_coder_legacy_compat():
         res = app.invoke(init, thread_id="tc-legacy")
         assert res.status == "completed"
         artifacts = res.state.get("artifacts", [])
-        assert len(artifacts) == 2
+        assert len(artifacts) == 4, f"legacy 2 tasks → 应有 4 个产物（每个 task 含实现+测试），实际 {len(artifacts)}"
         assert "src/task_t1.py" in artifacts
         assert "src/task_t2.py" in artifacts
         # 文件确实存在

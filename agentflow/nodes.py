@@ -70,7 +70,7 @@ def planner(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
         llm_text = ctx.activity(
             "llm_plan",
             lambda: get_registry().complete(
-                "planner", prompt, system="你是资深需求分析师，输出严格的 JSON。"
+                "planner", prompt, system_prompt="你是资深需求分析师，输出严格的 JSON。"
             ),
             input_summary=requirement,
         )
@@ -160,6 +160,11 @@ def coder(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
         # 文件路径：{workdir}/src/task_{id}.py
         file_dir = os.path.join(workdir, "src")
         os.makedirs(file_dir, exist_ok=True)
+        # 确保 __init__.py 存在，使 pytest 能 import src
+        init_path = os.path.join(file_dir, "__init__.py")
+        if not os.path.exists(init_path):
+            with open(init_path, "w") as f:
+                f.write("# auto-generated package\n")
         file_path = os.path.join(file_dir, f"task_{task_id}.py")
 
         # 构造 prompt
@@ -172,7 +177,7 @@ def coder(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
             code = ctx.activity(
                 f"llm_code_{task_id}",
                 lambda: get_registry().complete(
-                    "coder", prompt, system="你是高级工程师，只输出代码。"
+                    "coder", prompt, system_prompt="你是高级工程师，只输出代码。同时请生成 pytest 测试文件（test_*.py）。"
                 ),
                 input_summary=task_title,
             )
@@ -190,6 +195,30 @@ def coder(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
         )
 
         artifacts.append(f"src/task_{task_id}.py")
+
+        # 为每个 task 生成 pytest 测试文件
+        test_file_path = os.path.join(file_dir, f"test_task_{task_id}.py")
+        try:
+            test_code = ctx.activity(
+                f"llm_test_{task_id}",
+                lambda: get_registry().complete(
+                    "coder", f"为任务 {task_id}「{task_title}」编写 pytest 测试文件。\n实现代码：\n{code}",
+                    system_prompt="你是高级工程师，只输出 pytest 测试代码。",
+                ),
+                input_summary=f"test_{task_id}",
+            )
+        except Exception:
+            test_code = f"# test for {task_id}\n# mock test (LLM 不可用)\n"
+        if test_code.strip():
+            ctx.tool(
+                "write_file", key=f"test_{task_id}",
+                fn=lambda p=test_file_path, c=test_code: (
+                    open(p, "w", encoding="utf-8").write(c),
+                    {"path": p, "bytes": len(c.encode("utf-8"))},
+                )[1],
+                input_summary=f"test_{task_id}",
+            )
+            artifacts.append(f"src/test_task_{task_id}.py")
 
     result: dict[str, Any] = {
         "code": f"// v{version} — 共 {len(plan_tasks)} 个文件",
@@ -231,7 +260,7 @@ def debugger(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
             report = ctx.activity("llm_complete", lambda: get_registry().complete(
                 "debugger",
                 f"{reason}，对 v{version} 代码做测试评估，是否通过：{passed}",
-                system="你是测试工程师，输出简短测试结论。",
+                system_prompt="你是测试工程师，输出简短测试结论。",
             ))
         except Exception:
             report = "[LLM 不可用，使用确定性测试结论]"
@@ -366,7 +395,7 @@ def debugger(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
                     "debugger",
                     f"pytest v{version} 输出：\n{stdout[:2000]}\n\n"
                     f"请总结失败原因并给出修复建议。",
-                    system="你是测试工程师，输出简短诊断。",
+                    system_prompt="你是测试工程师，输出简短诊断。",
                 ),
             )
         except Exception:
@@ -389,7 +418,7 @@ def ai_review(state: dict[str, Any], ctx: NodeContext) -> dict[str, Any]:
             "reviewer",
             f"评审 v{state['code_version']} 代码（tasks: {state['tasks']}），"
             f"重点关注：代码质量、边界处理、测试覆盖。",
-            system="你是技术评审专家，给出结构化 review 意见。",
+            system_prompt="你是技术评审专家，给出结构化 review 意见。",
         ))
     except Exception:
         comments = "[LLM 不可用，跳过 AI 评审意见]"

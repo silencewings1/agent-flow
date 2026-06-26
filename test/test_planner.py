@@ -167,7 +167,7 @@ def test_planner_node_falls_back_when_llm_returns_garbage():
     """planner 节点在 LLM 返回乱码时仍能产出合法 Plan。"""
     # 注册一个返回乱码的「假 LLM」
     class GarbageRegistry(LLMRegistry):
-        def complete(self, node, prompt, *, system=None):
+        def complete(self, node, prompt, *, system_prompt=None):
             return "今天天气真好，不输出 JSON"
     set_registry(GarbageRegistry())
 
